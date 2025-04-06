@@ -52,7 +52,7 @@ jobs:
   issue-digest:
     runs-on: ubuntu-latest
     steps:
-      - uses: sethrylan/issue-digest@main
+      - uses: sethrylan/issue-digest@fee44a7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -76,7 +76,7 @@ jobs:
       - id: last
         run: |
           echo "monday=$(date -d 'last Monday' '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-      - uses: sethrylan/issue-digest@main
+      - uses: sethrylan/issue-digest@fee44a7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
