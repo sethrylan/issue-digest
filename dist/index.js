@@ -34251,7 +34251,8 @@ async function run() {
         const repo = repository.split('/')[1];
         const query = withDefault(coreExports.getInput('query'), `owner:${owner} repo:${repo} updated:>=${yesterday()}`);
         const title = withDefault(coreExports.getInput('title'), `Issue Digest for ${new Date().toISOString().split('T')[0]}`);
-        const intro = withDefault(coreExports.getInput('intro'), `Hello there! This dicussion is a digest of issues that will be updated .`);
+        const intro = withDefault(coreExports.getInput('intro'), `Hello there! This discussion is a digest of issues that will be updated .`);
+        const comment = withDefault(coreExports.getInput('comment'), '');
         const discussionCategory = withDefault(coreExports.getInput('discussionCategory'), 'General');
         const workflowRunUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
         const footer = `<hr /><em>This discussion was prompted <a href='https://github.com/search?q=${query}'>by a search query</a> in a <a href='${workflowRunUrl}'>workflow run</a> using <a href='https://github.com/sethrylan/issue-digest'>issue-digest</a>.</em>`;
@@ -34307,7 +34308,7 @@ async function run() {
         }
       }`, {
             discussionID: foundDiscussion.id,
-            body: issuesToMarkdown(issues)
+            body: `${comment} \n ${issuesToMarkdown(issues)}`
         });
         console.log('Discussion updated.');
         console.log(resp);

@@ -31,10 +31,7 @@ export async function run(): Promise<void> {
       core.getInput('intro'),
       `Hello there! This discussion is a digest of issues that will be updated .`
     )
-    const comment: string = withDefault(
-      core.getInput('comment'), 
-      ""
-    )
+    const comment: string = withDefault(core.getInput('comment'), '')
     const discussionCategory: string = withDefault(
       core.getInput('discussionCategory'),
       'General'
