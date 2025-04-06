@@ -1,6 +1,5 @@
 # Issue Digest
 
-[![GitHub Super-Linter](https://github.com/sethrylan/issue-digest/actions/workflows/linter.yml/badge.svg)](https://github.com/super-linter/super-linter)
 ![CI](https://github.com/sethrylan/issue-digest/actions/workflows/ci.yml/badge.svg)
 [![Check dist/](https://github.com/sethrylan/issue-digest/actions/workflows/check-dist.yml/badge.svg)](https://github.com/sethrylan/issue-digest/actions/workflows/check-dist.yml)
 [![CodeQL](https://github.com/sethrylan/issue-digest/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/sethrylan/issue-digest/actions/workflows/codeql-analysis.yml)
