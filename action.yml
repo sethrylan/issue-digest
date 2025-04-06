@@ -18,8 +18,7 @@ inputs:
   query:
     description: |
       optional: issue query string, defaults to the repo where the workflow is
-      hosted for the owner/repo, as "owner:<owner> repo:<repo>
-      updated:>=<24hr-ago>"
+      hosted for the owner/repo, as "repo:<repo> updated:>=<24hr-ago>"
     required: false
   title:
     description: |

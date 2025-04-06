@@ -15,13 +15,9 @@ export async function run(): Promise<void> {
       core.getInput('repo'),
       process.env.GITHUB_REPOSITORY!
     )
-
-    const owner = repository.split('/')[0]
-    const repo = repository.split('/')[1]
-
     const query: string = withDefault(
       core.getInput('query'),
-      `owner:${owner} repo:${repo} updated:>=${yesterday()}`
+      `repo:${repository} updated:>=${yesterday()}`
     )
     const title: string = withDefault(
       core.getInput('title'),
@@ -52,6 +48,9 @@ export async function run(): Promise<void> {
     if (issues.length === 0) {
       return
     }
+
+    const owner = repository.split('/')[0]
+    const repo = repository.split('/')[1]
 
     const categories = await getDiscussionCategories(octokit, owner, repo)
     const category = categories!.find(
