@@ -118,7 +118,7 @@ export async function run(): Promise<void> {
       }`,
       {
         discussionID: foundDiscussion.id,
-        body: `${comment} \n ${issuesToMarkdown(issues)}`
+        body: `${comment}${comment ? '\n' : ''} ${issuesToMarkdown(issues)}`
       }
     )
     console.log('Discussion updated.')
