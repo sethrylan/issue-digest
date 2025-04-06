@@ -86,12 +86,12 @@ jobs:
           title: 'Issue Digest for Week of ${{ steps.last.outputs.monday }}'
 ```
 
-## Issues
+## Common Errors
 
-Error `Resource not accessible by integration`
+### Error `Resource not accessible by integration`
 
 Check the permissions for the calling workflow.
 
-No Isuses are found
+#### No Isuses are found
 
 Check the permissions for the calling workflow.
