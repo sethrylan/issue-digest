@@ -29,8 +29,9 @@ export async function run(): Promise<void> {
     )
     const intro: string = withDefault(
       core.getInput('intro'),
-      `Hello there! This dicussion is a digest of issues that will be updated .`
+      `Hello there! This discussion is a digest of issues that will be updated.`
     )
+    const comment: string = withDefault(core.getInput('comment'), '')
     const discussionCategory: string = withDefault(
       core.getInput('discussionCategory'),
       'General'
@@ -114,7 +115,7 @@ export async function run(): Promise<void> {
       }`,
       {
         discussionID: foundDiscussion.id,
-        body: issuesToMarkdown(issues)
+        body: `${comment}${comment ? '\n' : ''} ${issuesToMarkdown(issues)}`
       }
     )
     console.log('Discussion updated.')
