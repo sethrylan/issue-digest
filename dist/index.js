@@ -34247,9 +34247,7 @@ function formatDistanceToNow(date, options) {
 async function run() {
     try {
         const repository = withDefault(coreExports.getInput('repo'), process.env.GITHUB_REPOSITORY);
-        const owner = repository.split('/')[0];
-        const repo = repository.split('/')[1];
-        const query = withDefault(coreExports.getInput('query'), `owner:${owner} repo:${repo} updated:>=${yesterday()}`);
+        const query = withDefault(coreExports.getInput('query'), `repo:${repository} updated:>=${yesterday()}`);
         const title = withDefault(coreExports.getInput('title'), `Issue Digest for ${new Date().toISOString().split('T')[0]}`);
         const intro = withDefault(coreExports.getInput('intro'), `Hello there! This discussion is a digest of issues that will be updated.`);
         const comment = withDefault(coreExports.getInput('comment'), '');
@@ -34264,6 +34262,8 @@ async function run() {
         if (issues.length === 0) {
             return;
         }
+        const owner = repository.split('/')[0];
+        const repo = repository.split('/')[1];
         const categories = await getDiscussionCategories(octokit, owner, repo);
         const category = categories.find((category) => category.name === discussionCategory);
         console.log(`Discussion category: ${JSON.stringify(category)}`);
