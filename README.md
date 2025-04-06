@@ -84,7 +84,7 @@ jobs:
             The title of the discussion will be create a new discussion each week, and every time the action runs a comment will be added with a list of issues changed in the last 24 hours.
           comment: |
             Issues updated in the last 24 hours
-          title: | 
+          title: |
             Issue Digest for Week of ${{ steps.last.outputs.monday }}
 ```
 
