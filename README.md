@@ -5,7 +5,7 @@
 [![CodeQL](https://github.com/sethrylan/issue-digest/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/sethrylan/issue-digest/actions/workflows/codeql-analysis.yml)
 
 A GitHub Action that comments a list of issues. If a discussion with a match
-`title` is found, that dicussion is used, or a new discussion is created.
+`title` is found, that discussion is used, or a new discussion is created.
 
 ## Development
 
@@ -82,8 +82,10 @@ jobs:
           intro: |
             🤖 This discussion was created by issue-digest
             The title of the discussion will be create a new discussion each week, and every time the action runs a comment will be added with a list of issues changed in the last 24 hours.
+          comment: |
+            Issues updated in the last 24 hours
           query: |
-          title: 'Issue Digest for Week of ${{ steps.last.outputs.monday }}'
+            title: 'Issue Digest for Week of ${{ steps.last.outputs.monday }}'
 ```
 
 ## Common Errors

@@ -26,6 +26,10 @@ inputs:
       optional: title of discussion post to create (or add a comment to);
       defaults to Issue Digest <current date UTC>
     required: false
+  comment:
+    description: |
+      optional: Text/Markdown for the comment intro
+    required: false
   intro:
     description: |
       optional: Text/Markdown for the discussion intro
