@@ -1,0 +1,45 @@
+name: Issue Digest
+description: |
+  Create a discussion post with a digest of issues
+author: sethrylan
+branding:
+  icon: book
+  color: blue
+
+inputs:
+  repo:
+    description: |
+      repository to digest; defaults to the current repo
+    required: false
+  since:
+    description: |
+      optional: datetime to lookback to, defaults to 24hr ago
+    required: false
+  query:
+    description: |
+      optional: issue query string, defaults to the repo where the workflow is
+      hosted for the owner/repo, as "owner:<owner> repo:<repo>
+      updated:>=<24hr-ago>"
+    required: false
+  title:
+    description: |
+      optional: title of discussion post to create (or add a comment to);
+      defaults to Issue Digest <current date UTC>
+    required: false
+  intro:
+    description: |
+      optional: Text/Markdown for the discussion intro
+    required: false
+  discussionCategory:
+    description: |
+      optional: Discussion category to use; defaults to General
+    required: false
+
+outputs:
+  discussionUrl:
+    description: |
+      The URL of the discussion post created or updated
+
+runs:
+  using: node20
+  main: dist/index.js
