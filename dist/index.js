@@ -34386,7 +34386,8 @@ async function getIssues(octokit, query) {
     const issues = [];
     for await (const response of octokit.paginate.iterator(octokit.rest.search.issuesAndPullRequests, {
         q: query,
-        per_page: 100
+        per_page: 100,
+        advanced_search: 'true'
     })) {
         issues.push(...response.data);
     }

@@ -235,7 +235,8 @@ async function getIssues(octokit: Octokit, query: string) {
     octokit.rest.search.issuesAndPullRequests,
     {
       q: query,
-      per_page: 100
+      per_page: 100,
+      advanced_search: 'true'
     }
   )) {
     issues.push(...response.data)
