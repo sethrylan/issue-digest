@@ -118,6 +118,9 @@ export async function run(): Promise<void> {
       }
     )
     console.log('Discussion updated.')
+
+    const events = await getIssueTimelineEvents(octokit, 'owner', 'repo', 123);
+    console.log(`Retrieved ${events.length} timeline events for issue #123`);
     console.log(resp)
 
     core.setOutput('discussionUrl', foundDiscussion.url)
@@ -276,4 +279,34 @@ function issuesToMarkdown(issues: Issue[]): string {
     markdown += '\n'
   }
   return markdown
+}
+
+/**
+ * Retrieves timeline events for a specific GitHub issue
+ * 
+ * @param octokit - The Octokit instance
+ * @param owner - Repository owner
+ * @param repo - Repository name
+ * @param issueNumber - Issue number
+ * @returns Promise resolving to an array of timeline events
+ */
+async function getIssueTimelineEvents(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  issueNumber: number
+) {
+  const events = [];
+  for await (const response of octokit.paginate.iterator(
+    octokit.rest.issues.listEventsForTimeline,
+    {
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: 100
+    }
+  )) {
+    events.push(...response.data);
+  }
+  return events;
 }
