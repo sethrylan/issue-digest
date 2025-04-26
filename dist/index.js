@@ -32823,6 +32823,91 @@ function yesterday() {
     return date.toISOString();
 }
 
+async function FindDiscussion(octokit, owner, repo, title, categoryId) {
+    console.log(`Finding discussion with title: ${title} in ${owner}/${repo}`);
+    // https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions
+    const discussionIter = octokit.graphql.paginate.iterator(`query paginate($cursor: String) {
+      repository(owner: "${owner}", name: "${repo}") {
+        discussions(first: 10, after: $cursor) {
+          nodes {
+            id
+            title
+            url
+            category {
+              id
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }`);
+    for await (const page of discussionIter) {
+        const discussions = page.repository.discussions.nodes;
+        coreExports.debug(discussions);
+        if (!discussions || discussions.length === 0) {
+            coreExports.debug('page: empty');
+            return undefined;
+        }
+        console.log(`discussion page length: ${discussions.length}`);
+        for (const d of discussions) {
+            if (d.title == title && d.category.id == categoryId) {
+                return d;
+            }
+        }
+    }
+}
+async function GetDiscussionCategories(octokit, owner, repo) {
+    console.log(`Finding discussion categories in ${owner}/${repo}`);
+    const response = await octokit.graphql(`query {
+      repository(owner: "${owner}", name: "${repo}") {
+        discussionCategories(first: 50) {
+          nodes {
+            id
+            name
+          }
+        }
+      }
+    }`);
+    return response.repository.discussionCategories.nodes;
+}
+// Create a new discussion
+// https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function CreateDiscussion(octokit, repoId, categoryId, title, body) {
+    return await octokit.graphql(`mutation createDiscussion($input: CreateDiscussionInput!) {
+      createDiscussion(input: $input) {
+        discussion {
+          title
+          url
+          id
+        }
+      }
+    }`, {
+        input: {
+            repositoryId: repoId,
+            title: title,
+            body: body,
+            categoryId: categoryId
+        }
+    });
+}
+async function AddComment(octokit, discussionIdToComment, body) {
+    return await octokit.graphql(`mutation addComment($discussionID: ID!, $body: String!) {
+      addDiscussionComment(input: {discussionId: $discussionID, body: $body}) {
+        clientMutationId
+        comment {
+          url
+        }
+      }
+    }`, {
+        discussionID: discussionIdToComment,
+        body: body
+    });
+}
+
 /**
  * @module constants
  * @summary Useful constants
@@ -34239,6 +34324,37 @@ function formatDistanceToNow(date, options) {
   return formatDistance(date, constructNow(date), options);
 }
 
+async function GetIssues(octokit, query) {
+    // https://github.com/octokit/plugin-rest-endpoint-methods.js/blob/main/docs/search/issuesAndPullRequests.md
+    // https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests
+    const issues = [];
+    for await (const response of octokit.paginate.iterator(octokit.rest.search.issuesAndPullRequests, {
+        q: query,
+        per_page: 100,
+        advanced_search: 'true'
+    })) {
+        issues.push(...response.data);
+    }
+    return issues;
+}
+function IssuesToMarkdown(issues) {
+    let markdown = '';
+    for (const issue of issues) {
+        markdown += `* ${issue.html_url} `;
+        if (issue.closed_at) {
+            markdown += `(closed ${formatDistanceToNow(new Date(issue.closed_at), { addSuffix: true })})`;
+        }
+        else if (issue.updated_at > issue.created_at) {
+            markdown += `(updated ${formatDistanceToNow(new Date(issue.updated_at), { addSuffix: true })})`;
+        }
+        else {
+            markdown += `(created ${formatDistanceToNow(new Date(issue.created_at), { addSuffix: true })})`;
+        }
+        markdown += '\n';
+    }
+    return markdown;
+}
+
 /**
  * The main function for the action.
  *
@@ -34257,14 +34373,14 @@ async function run() {
         const MyOctokit = Octokit.plugin(paginateGraphQL);
         const octokit = new MyOctokit({ auth: process.env.GITHUB_TOKEN });
         console.log(`Using query: ${query}`);
-        const issues = await getIssues(octokit, query);
+        const issues = await GetIssues(octokit, query);
         console.log(`${issues.length} issues found.`);
         if (issues.length === 0) {
             return;
         }
         const owner = repository.split('/')[0];
         const repo = repository.split('/')[1];
-        const categories = await getDiscussionCategories(octokit, owner, repo);
+        const categories = await GetDiscussionCategories(octokit, owner, repo);
         const category = categories.find((category) => category.name === discussionCategory);
         console.log(`Discussion category: ${JSON.stringify(category)}`);
         if (!category) {
@@ -34272,44 +34388,16 @@ async function run() {
             return;
         }
         const repoId = await findRepoId(octokit, owner, repo);
-        let foundDiscussion = await findDiscussion(octokit, owner, repo, title, category.id);
+        let foundDiscussion = await FindDiscussion(octokit, owner, repo, title, category.id);
         if (!foundDiscussion) {
             console.log('Discussion not found.');
-            // Create a new discussion
-            // https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const resp = await octokit.graphql(`mutation createDiscussion($input: CreateDiscussionInput!) {
-          createDiscussion(input: $input) {
-            discussion {
-              title
-              url
-              id
-            }
-          }
-        }`, {
-                input: {
-                    repositoryId: repoId,
-                    title: title,
-                    body: intro + footer,
-                    categoryId: category.id
-                }
-            });
+            const resp = await CreateDiscussion(octokit, repoId, category.id, title, intro + footer);
             foundDiscussion = resp.createDiscussion.discussion;
             console.log(`Discussion created: ${foundDiscussion.url}`);
         }
         console.log(`Discussion found: ${foundDiscussion.url}`);
         // Add a comment to the discussion
-        const resp = await octokit.graphql(`mutation addComment($discussionID: ID!, $body: String!) {
-        addDiscussionComment(input: {discussionId: $discussionID, body: $body}) {
-          clientMutationId
-          comment {
-            url
-          }
-        }
-      }`, {
-            discussionID: foundDiscussion.id,
-            body: `${comment}${comment ? '\n' : ''} ${issuesToMarkdown(issues)}`
-        });
+        const resp = await AddComment(octokit, foundDiscussion.id, `${comment}${comment ? '\n' : ''} ${IssuesToMarkdown(issues)}`);
         console.log('Discussion updated.');
         console.log(resp);
         coreExports.setOutput('discussionUrl', foundDiscussion.url);
@@ -34320,20 +34408,6 @@ async function run() {
             coreExports.setFailed(error.message);
     }
 }
-async function getDiscussionCategories(octokit, owner, repo) {
-    console.log(`Finding discussion categories in ${owner}/${repo}`);
-    const response = await octokit.graphql(`query {
-      repository(owner: "${owner}", name: "${repo}") {
-        discussionCategories(first: 50) {
-          nodes {
-            id
-            name
-          }
-        }
-      }
-    }`);
-    return response.repository.discussionCategories.nodes;
-}
 async function findRepoId(octokit, owner, repo) {
     console.log(`Finding repo id for ${owner}/${repo}`);
     const response = await octokit.graphql(`query {
@@ -34343,72 +34417,6 @@ async function findRepoId(octokit, owner, repo) {
       }
     }`);
     return response.repository.id;
-}
-async function findDiscussion(octokit, owner, repo, title, categoryId) {
-    console.log(`Finding discussion with title: ${title} in ${owner}/${repo}`);
-    // https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions
-    const discussionIter = octokit.graphql.paginate.iterator(`query paginate($cursor: String) {
-      repository(owner: "${owner}", name: "${repo}") {
-        discussions(first: 10, after: $cursor) {
-          nodes {
-            id
-            title
-            url
-            category {
-              id
-            }
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }
-    }`);
-    for await (const page of discussionIter) {
-        const discussions = page.repository.discussions.nodes;
-        coreExports.debug(discussions);
-        if (!discussions || discussions.length === 0) {
-            coreExports.debug('page: empty');
-            return undefined;
-        }
-        console.log(`discussion page length: ${discussions.length}`);
-        for (const d of discussions) {
-            if (d.title == title && d.category.id == categoryId) {
-                return d;
-            }
-        }
-    }
-}
-async function getIssues(octokit, query) {
-    // https://github.com/octokit/plugin-rest-endpoint-methods.js/blob/main/docs/search/issuesAndPullRequests.md
-    // https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests
-    const issues = [];
-    for await (const response of octokit.paginate.iterator(octokit.rest.search.issuesAndPullRequests, {
-        q: query,
-        per_page: 100,
-        advanced_search: 'true'
-    })) {
-        issues.push(...response.data);
-    }
-    return issues;
-}
-function issuesToMarkdown(issues) {
-    let markdown = '';
-    for (const issue of issues) {
-        markdown += `* ${issue.html_url} `;
-        if (issue.closed_at) {
-            markdown += `(closed ${formatDistanceToNow(new Date(issue.closed_at), { addSuffix: true })})`;
-        }
-        else if (issue.updated_at > issue.created_at) {
-            markdown += `(updated ${formatDistanceToNow(new Date(issue.updated_at), { addSuffix: true })})`;
-        }
-        else {
-            markdown += `(created ${formatDistanceToNow(new Date(issue.created_at), { addSuffix: true })})`;
-        }
-        markdown += '\n';
-    }
-    return markdown;
 }
 
 /**
