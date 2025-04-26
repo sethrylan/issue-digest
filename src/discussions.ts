@@ -73,7 +73,6 @@ export async function GetDiscussionCategories(
 
 // Create a new discussion
 // https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function CreateDiscussion(
   octokit: Octokit,
   repoId: string,
@@ -81,6 +80,7 @@ export async function CreateDiscussion(
   title: string,
   body: string
 ) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return await octokit.graphql<any>(
     `mutation createDiscussion($input: CreateDiscussionInput!) {
       createDiscussion(input: $input) {
