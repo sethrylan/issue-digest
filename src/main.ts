@@ -2,7 +2,13 @@ import * as core from '@actions/core'
 import { Octokit } from 'octokit'
 import { paginateGraphQL } from '@octokit/plugin-paginate-graphql'
 import { withDefault, yesterday } from './util.js'
-import { formatDistanceToNow } from 'date-fns'
+import {
+  AddComment,
+  CreateDiscussion,
+  FindDiscussion,
+  GetDiscussionCategories
+} from './discussions.js'
+import { GetIssues, IssuesToMarkdown } from './issues.js'
 
 /**
  * The main function for the action.
@@ -41,7 +47,7 @@ export async function run(): Promise<void> {
 
     console.log(`Using query: ${query}`)
 
-    const issues = await getIssues(octokit, query)
+    const issues = await GetIssues(octokit, query)
 
     console.log(`${issues.length} issues found.`)
 
@@ -52,7 +58,7 @@ export async function run(): Promise<void> {
     const owner = repository.split('/')[0]
     const repo = repository.split('/')[1]
 
-    const categories = await getDiscussionCategories(octokit, owner, repo)
+    const categories = await GetDiscussionCategories(octokit, owner, repo)
     const category = categories!.find(
       (category) => category!.name === discussionCategory
     )
@@ -63,7 +69,7 @@ export async function run(): Promise<void> {
     }
 
     const repoId = await findRepoId(octokit, owner, repo)
-    let foundDiscussion = await findDiscussion(
+    let foundDiscussion = await FindDiscussion(
       octokit,
       owner,
       repo,
@@ -73,27 +79,12 @@ export async function run(): Promise<void> {
 
     if (!foundDiscussion) {
       console.log('Discussion not found.')
-      // Create a new discussion
-      // https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const resp = await octokit.graphql<any>(
-        `mutation createDiscussion($input: CreateDiscussionInput!) {
-          createDiscussion(input: $input) {
-            discussion {
-              title
-              url
-              id
-            }
-          }
-        }`,
-        {
-          input: {
-            repositoryId: repoId,
-            title: title,
-            body: intro + footer,
-            categoryId: category.id
-          }
-        }
+      const resp = await CreateDiscussion(
+        octokit,
+        repoId,
+        category.id,
+        title,
+        intro + footer
       )
 
       foundDiscussion = resp.createDiscussion.discussion
@@ -103,19 +94,10 @@ export async function run(): Promise<void> {
     console.log(`Discussion found: ${foundDiscussion.url}`)
 
     // Add a comment to the discussion
-    const resp = await octokit.graphql(
-      `mutation addComment($discussionID: ID!, $body: String!) {
-        addDiscussionComment(input: {discussionId: $discussionID, body: $body}) {
-          clientMutationId
-          comment {
-            url
-          }
-        }
-      }`,
-      {
-        discussionID: foundDiscussion.id,
-        body: `${comment}${comment ? '\n' : ''} ${issuesToMarkdown(issues)}`
-      }
+    const resp = await AddComment(
+      octokit,
+      foundDiscussion.id,
+      `${comment}${comment ? '\n' : ''} ${IssuesToMarkdown(issues)}`
     )
     console.log('Discussion updated.')
     console.log(resp)
@@ -125,43 +107,6 @@ export async function run(): Promise<void> {
     // Fail the workflow run if an error occurs
     if (error instanceof Error) core.setFailed(error.message)
   }
-}
-
-async function getDiscussionCategories(
-  octokit: Octokit,
-  owner: string,
-  repo: string
-) {
-  console.log(`Finding discussion categories in ${owner}/${repo}`)
-  const response = await octokit.graphql<RepoDiscussionCategories>(
-    `query {
-      repository(owner: "${owner}", name: "${repo}") {
-        discussionCategories(first: 50) {
-          nodes {
-            id
-            name
-          }
-        }
-      }
-    }`
-  )
-
-  return response!.repository!.discussionCategories!.nodes
-}
-
-type Nodes = {
-  nodes:
-    | ({
-        id: string
-        name: string
-      } | null)[]
-    | null
-}
-
-type RepoDiscussionCategories = {
-  repository: {
-    discussionCategories: Nodes | null
-  } | null
 }
 
 async function findRepoId(octokit: Octokit, owner: string, repo: string) {
@@ -176,104 +121,4 @@ async function findRepoId(octokit: Octokit, owner: string, repo: string) {
   )
 
   return response!.repository!.id
-}
-
-async function findDiscussion(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  title: string,
-  categoryId: string
-) {
-  console.log(`Finding discussion with title: ${title} in ${owner}/${repo}`)
-
-  // https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions
-  const discussionIter = octokit.graphql.paginate.iterator(
-    `query paginate($cursor: String) {
-      repository(owner: "${owner}", name: "${repo}") {
-        discussions(first: 10, after: $cursor) {
-          nodes {
-            id
-            title
-            url
-            category {
-              id
-            }
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }
-    }`
-  )
-
-  for await (const page of discussionIter) {
-    const discussions = page.repository.discussions.nodes
-    core.debug(discussions)
-    if (!discussions || discussions.length === 0) {
-      core.debug('page: empty')
-      return undefined
-    }
-    console.log(`discussion page length: ${discussions.length}`)
-
-    for (const d of discussions) {
-      if (d.title == title && d.category.id == categoryId) {
-        return d
-      }
-    }
-  }
-}
-
-async function getIssues(octokit: Octokit, query: string) {
-  // https://github.com/octokit/plugin-rest-endpoint-methods.js/blob/main/docs/search/issuesAndPullRequests.md
-  // https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests
-
-  const issues = []
-  for await (const response of octokit.paginate.iterator(
-    octokit.rest.search.issuesAndPullRequests,
-    {
-      q: query,
-      per_page: 100,
-      advanced_search: 'true'
-    }
-  )) {
-    issues.push(...response.data)
-  }
-  return issues
-}
-
-type Issue = {
-  url: string
-  repository_url: string
-  labels_url: string
-  comments_url: string
-  events_url: string
-  html_url: string
-  id: number
-  node_id: string
-  number: number
-  title: string
-  locked: boolean
-  created_at: string
-  updated_at: string
-  closed_at: string | null
-  state: string
-}
-
-function issuesToMarkdown(issues: Issue[]): string {
-  let markdown = ''
-  for (const issue of issues) {
-    markdown += `* ${issue.html_url} `
-    if (issue.closed_at) {
-      markdown += `(closed ${formatDistanceToNow(new Date(issue.closed_at), { addSuffix: true })})`
-    } else if (issue.updated_at > issue.created_at) {
-      markdown += `(updated ${formatDistanceToNow(new Date(issue.updated_at), { addSuffix: true })})`
-    } else {
-      markdown += `(created ${formatDistanceToNow(new Date(issue.created_at), { addSuffix: true })})`
-    }
-    markdown += '\n'
-  }
-  return markdown
 }
