@@ -3,6 +3,7 @@ import { Octokit } from 'octokit'
 import { paginateGraphQL } from '@octokit/plugin-paginate-graphql'
 import { withDefault, yesterday } from './util.js'
 import { formatDistanceToNow } from 'date-fns'
+import OpenAI from 'openai'
 
 /**
  * The main function for the action.
@@ -32,12 +33,22 @@ export async function run(): Promise<void> {
       core.getInput('discussionCategory'),
       'General'
     )
+    // const summarize: boolean = withDefault(
+    //   core.getBooleanInput('summarize'),
+    //   true
+    // )
 
     const workflowRunUrl: string = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
     const footer: string = `<hr /><em>This discussion was prompted <a href='https://github.com/search?q=${query}'>by a search query</a> in a <a href='${workflowRunUrl}'>workflow run</a> using <a href='https://github.com/sethrylan/issue-digest'>issue-digest</a>.</em>`
 
     const MyOctokit = Octokit.plugin(paginateGraphQL)
     const octokit = new MyOctokit({ auth: process.env.GITHUB_TOKEN })
+    const modelsToken = process.env.MODELS_TOKEN || process.env.GITHUB_TOKEN
+
+    if (!modelsToken) {
+      core.setFailed('No models token provided')
+      return
+    }
 
     console.log(`Using query: ${query}`)
 
@@ -51,6 +62,24 @@ export async function run(): Promise<void> {
 
     const owner = repository.split('/')[0]
     const repo = repository.split('/')[1]
+
+    const endpoint = 'https://models.github.ai/inference'
+    const modelName = 'openai/gpt-4o-mini'
+
+    const modelsClient = new OpenAI({ baseURL: endpoint, apiKey: modelsToken })
+
+    const response = await modelsClient.chat.completions.create({
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'What is the capital of France?' }
+      ],
+      temperature: 1.0,
+      top_p: 1.0,
+      max_tokens: 1000,
+      model: modelName
+    })
+
+    console.log(response.choices[0].message.content)
 
     const categories = await getDiscussionCategories(octokit, owner, repo)
     const category = categories!.find(
@@ -119,8 +148,8 @@ export async function run(): Promise<void> {
     )
     console.log('Discussion updated.')
 
-    const events = await getIssueTimelineEvents(octokit, 'owner', 'repo', 123);
-    console.log(`Retrieved ${events.length} timeline events for issue #123`);
+    const events = await getIssueTimelineEvents(octokit, 'owner', 'repo', 123)
+    console.log(`Retrieved ${events.length} timeline events for issue #123`)
     console.log(resp)
 
     core.setOutput('discussionUrl', foundDiscussion.url)
@@ -283,7 +312,7 @@ function issuesToMarkdown(issues: Issue[]): string {
 
 /**
  * Retrieves timeline events for a specific GitHub issue
- * 
+ *
  * @param octokit - The Octokit instance
  * @param owner - Repository owner
  * @param repo - Repository name
@@ -296,7 +325,7 @@ async function getIssueTimelineEvents(
   repo: string,
   issueNumber: number
 ) {
-  const events = [];
+  const events = []
   for await (const response of octokit.paginate.iterator(
     octokit.rest.issues.listEventsForTimeline,
     {
@@ -306,7 +335,7 @@ async function getIssueTimelineEvents(
       per_page: 100
     }
   )) {
-    events.push(...response.data);
+    events.push(...response.data)
   }
-  return events;
+  return events
 }
