@@ -40,8 +40,8 @@ export async function run(): Promise<void> {
       core.getInput('discussionCategory'),
       'General'
     )
-    const models = withDefault(core.getInput('models'), 'true')
-    const modelsEnabled = models === 'true'
+    const models = withDefault(core.getInput('models'), 'false')
+    const modelsEnabled = models !== 'false'
 
     const workflowRunUrl: string = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
     const footer: string = `<hr /><em>This discussion was prompted <a href='https://github.com/search?q=${query}'>by a search query</a> in a <a href='${workflowRunUrl}'>workflow run</a> using <a href='https://github.com/sethrylan/issue-digest'>issue-digest</a>.</em>`

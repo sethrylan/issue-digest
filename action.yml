@@ -37,6 +37,10 @@ inputs:
     description: |
       optional: Discussion category to use; defaults to General
     required: false
+  models:
+    description: |
+      optional: whether to use GitHub Models to summarize the issues
+    required: false
 
 outputs:
   discussionUrl:
