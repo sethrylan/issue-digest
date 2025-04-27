@@ -9,6 +9,8 @@ import {
   GetDiscussionCategories
 } from './discussions.js'
 import { GetIssues, IssuesToMarkdown } from './issues.js'
+import { GetTimelineForIssue } from './events.js'
+import { Completions } from './models.js'
 
 /**
  * The main function for the action.
@@ -38,6 +40,8 @@ export async function run(): Promise<void> {
       core.getInput('discussionCategory'),
       'General'
     )
+    const models = withDefault(core.getInput('models'), 'true')
+    const modelsEnabled = models === 'true'
 
     const workflowRunUrl: string = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
     const footer: string = `<hr /><em>This discussion was prompted <a href='https://github.com/search?q=${query}'>by a search query</a> in a <a href='${workflowRunUrl}'>workflow run</a> using <a href='https://github.com/sethrylan/issue-digest'>issue-digest</a>.</em>`
@@ -92,6 +96,18 @@ export async function run(): Promise<void> {
     }
 
     console.log(`Discussion found: ${foundDiscussion.url}`)
+
+    if (modelsEnabled) {
+      await Promise.all(
+        issues.map(async (issue) => {
+          const timeline = await GetTimelineForIssue(octokit, issue)
+          const completion = await Completions(`${JSON.stringify(timeline)}`)
+          console.log(`Timeline: ${JSON.stringify(timeline)}`)
+          console.log(`Completion: ${completion}`)
+          issue.summary = completion
+        })
+      )
+    }
 
     // Add a comment to the discussion
     const resp = await AddComment(
