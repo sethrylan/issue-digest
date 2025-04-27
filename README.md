@@ -88,6 +88,26 @@ jobs:
             Issue Digest for Week of ${{ steps.last.outputs.monday }}
 ```
 
+### Add Copilot summaries to the digest
+
+```yaml
+permissions:
+  contents: read
+  discussions: write
+  issues: read
+  models: read
+
+jobs:
+  issue-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: sethrylan/issue-digest@b920bb8465f5a0682caa908ba8d943bc3dfc6129
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          models: true
+```
+
 ## Common Errors
 
 ### Error `Resource not accessible by integration`

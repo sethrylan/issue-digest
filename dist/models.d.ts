@@ -1,1 +1,1 @@
-export declare function Completions(userPrompt: string): Promise<string>;
+export declare function TimelineSummary(timelines: string, query: string): Promise<string>;

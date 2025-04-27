@@ -10,7 +10,7 @@ import {
 } from './discussions.js'
 import { GetIssues, IssuesToMarkdown } from './issues.js'
 import { GetTimelineForIssue } from './events.js'
-import { Completions } from './models.js'
+import { TimelineSummary } from './models.js'
 
 /**
  * The main function for the action.
@@ -100,11 +100,22 @@ export async function run(): Promise<void> {
     if (modelsEnabled) {
       await Promise.all(
         issues.map(async (issue) => {
-          const timeline = await GetTimelineForIssue(octokit, issue)
-          const completion = await Completions(`${JSON.stringify(timeline)}`)
-          console.log(`Timeline: ${JSON.stringify(timeline)}`)
-          console.log(`Completion: ${completion}`)
-          issue.summary = completion
+          try {
+            console.log(`Fetching timeline for issue: ${issue.html_url}`)
+            const timeline = await GetTimelineForIssue(octokit, issue)
+            console.log(`Timeline: ${JSON.stringify(timeline)}`)
+            const completion = await TimelineSummary(
+              `${JSON.stringify(timeline)}`,
+              query
+            )
+            console.log(`Completion: ${completion}`)
+            issue.summary = completion
+          } catch (error) {
+            console.error(
+              `Error fetching timeline for issue: ${issue.html_url}`
+            )
+            console.error(error)
+          }
         })
       )
     }

@@ -36550,7 +36550,7 @@ let Messages$1 = class Messages extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
-let Completions$3 = class Completions extends APIResource {
+let Completions$2 = class Completions extends APIResource {
     constructor() {
         super(...arguments);
         this.messages = new Messages$1(this._client);
@@ -36591,17 +36591,17 @@ class ChatCompletionsPage extends CursorPage {
 }
 class ChatCompletionStoreMessagesPage extends CursorPage {
 }
-Completions$3.ChatCompletionsPage = ChatCompletionsPage;
-Completions$3.Messages = Messages$1;
+Completions$2.ChatCompletionsPage = ChatCompletionsPage;
+Completions$2.Messages = Messages$1;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 let Chat$1 = class Chat extends APIResource {
     constructor() {
         super(...arguments);
-        this.completions = new Completions$3(this._client);
+        this.completions = new Completions$2(this._client);
     }
 };
-Chat$1.Completions = Completions$3;
+Chat$1.Completions = Completions$2;
 Chat$1.ChatCompletionsPage = ChatCompletionsPage;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
@@ -38740,7 +38740,7 @@ class ChatCompletionStreamingRunner extends ChatCompletionStream {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
-let Completions$2 = class Completions extends APIResource {
+let Completions$1 = class Completions extends APIResource {
     parse(body, options) {
         validateInputTools(body.tools);
         return this._client.chat.completions
@@ -38777,11 +38777,11 @@ let Completions$2 = class Completions extends APIResource {
 class Chat extends APIResource {
     constructor() {
         super(...arguments);
-        this.completions = new Completions$2(this._client);
+        this.completions = new Completions$1(this._client);
     }
 }
 (function (Chat) {
-    Chat.Completions = Completions$2;
+    Chat.Completions = Completions$1;
 })(Chat || (Chat = {}));
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
@@ -39162,11 +39162,11 @@ Beta.AssistantsPage = AssistantsPage;
 Beta.Threads = Threads;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
-let Completions$1 = class Completions extends APIResource {
+class Completions extends APIResource {
     create(body, options) {
         return this._client.post('/completions', { body, ...options, stream: body.stream ?? false });
     }
-};
+}
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 class Embeddings extends APIResource {
@@ -40489,7 +40489,7 @@ class OpenAI extends APIClient {
             maxRetries: options.maxRetries,
             fetch: options.fetch,
         });
-        this.completions = new Completions$1(this);
+        this.completions = new Completions(this);
         this.chat = new Chat$1(this);
         this.embeddings = new Embeddings(this);
         this.files = new Files$1(this);
@@ -40545,7 +40545,7 @@ OpenAI.PermissionDeniedError = PermissionDeniedError;
 OpenAI.UnprocessableEntityError = UnprocessableEntityError;
 OpenAI.toFile = toFile;
 OpenAI.fileFromPath = fileFromPath;
-OpenAI.Completions = Completions$1;
+OpenAI.Completions = Completions;
 OpenAI.Chat = Chat$1;
 OpenAI.ChatCompletionsPage = ChatCompletionsPage;
 OpenAI.Embeddings = Embeddings;
@@ -40568,22 +40568,26 @@ OpenAI.Responses = Responses;
 OpenAI.Evals = Evals;
 OpenAI.EvalListResponsesPage = EvalListResponsesPage;
 
-async function Completions(userPrompt) {
+async function TimelineSummary(timelines, query) {
     const endpoint = 'https://models.github.ai/inference';
     const modelName = 'openai/gpt-4o-mini';
     const modelsToken = process.env.MODELS_TOKEN || process.env.GITHUB_TOKEN;
-    const modelsClient = new OpenAI({ baseURL: endpoint, apiKey: modelsToken });
+    const modelsClient = new OpenAI({
+        baseURL: endpoint,
+        apiKey: modelsToken,
+        timeout: 30000
+    });
     const response = await modelsClient.chat.completions.create({
         messages: [
             {
                 role: 'system',
-                content: `You are a summarizing bot. Given a list of timeline data, summarize the most recent changes in one sentence. 
-          Keep your description brief and succinct. This will be read as part of a tabled summary of other issues, so 
-          we just need to relevant details about what changed and by whom. No need to give specific dates or timestamps.
-          If mentioning username/login, always format as \`@username\`, with the backticks. No need to mention the name
-          or number of the issue, because that will already be known.`
+                content: `I am summarizing bot. Given a list of timeline data, I summarize the most relevant changes in one sentence. 
+          I am succinct and helpful. I don't need to give specific dates or timestamps. If mentioning username/login, I
+          always format as \`@username\`, with the backticks. I don't need to mention the name or number of the issue, 
+          because that will already be known. The original query is ${query}, and I should use the created_at and updated_at
+          timestamps to determine the order and relevance of events to the original query.`
             },
-            { role: 'user', content: userPrompt }
+            { role: 'user', content: timelines }
         ],
         temperature: 1.0,
         top_p: 1.0,
@@ -40638,11 +40642,18 @@ async function run() {
         console.log(`Discussion found: ${foundDiscussion.url}`);
         if (modelsEnabled) {
             await Promise.all(issues.map(async (issue) => {
-                const timeline = await GetTimelineForIssue(octokit, issue);
-                const completion = await Completions(`${JSON.stringify(timeline)}`);
-                console.log(`Timeline: ${JSON.stringify(timeline)}`);
-                console.log(`Completion: ${completion}`);
-                issue.summary = completion;
+                try {
+                    console.log(`Fetching timeline for issue: ${issue.html_url}`);
+                    const timeline = await GetTimelineForIssue(octokit, issue);
+                    console.log(`Timeline: ${JSON.stringify(timeline)}`);
+                    const completion = await TimelineSummary(`${JSON.stringify(timeline)}`, query);
+                    console.log(`Completion: ${completion}`);
+                    issue.summary = completion;
+                }
+                catch (error) {
+                    console.error(`Error fetching timeline for issue: ${issue.html_url}`);
+                    console.error(error);
+                }
             }));
         }
         // Add a comment to the discussion

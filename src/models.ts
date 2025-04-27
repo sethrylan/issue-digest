@@ -1,24 +1,31 @@
 import OpenAI from 'openai'
 
-export async function Completions(userPrompt: string): Promise<string> {
+export async function TimelineSummary(
+  timelines: string,
+  query: string
+): Promise<string> {
   const endpoint = 'https://models.github.ai/inference'
   const modelName = 'openai/gpt-4o-mini'
 
   const modelsToken = process.env.MODELS_TOKEN || process.env.GITHUB_TOKEN
 
-  const modelsClient = new OpenAI({ baseURL: endpoint, apiKey: modelsToken })
+  const modelsClient = new OpenAI({
+    baseURL: endpoint,
+    apiKey: modelsToken,
+    timeout: 30000
+  })
 
   const response = await modelsClient.chat.completions.create({
     messages: [
       {
         role: 'system',
-        content: `You are a summarizing bot. Given a list of timeline data, summarize the most recent changes in one sentence. 
-          Keep your description brief and succinct. This will be read as part of a tabled summary of other issues, so 
-          we just need to relevant details about what changed and by whom. No need to give specific dates or timestamps.
-          If mentioning username/login, always format as \`@username\`, with the backticks. No need to mention the name
-          or number of the issue, because that will already be known.`
+        content: `I am summarizing bot. Given a list of timeline data, I summarize the most relevant changes in one sentence. 
+          I am succinct and helpful. I don't need to give specific dates or timestamps. If mentioning username/login, I
+          always format as \`@username\`, with the backticks. I don't need to mention the name or number of the issue, 
+          because that will already be known. The original query is ${query}, and I should use the created_at and updated_at
+          timestamps to determine the order and relevance of events to the original query.`
       },
-      { role: 'user', content: userPrompt }
+      { role: 'user', content: timelines }
     ],
     temperature: 1.0,
     top_p: 1.0,
