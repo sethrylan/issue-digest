@@ -1,5 +1,5 @@
 import { Octokit } from 'octokit';
-type Issue = {
+export type Issue = {
     url: string;
     repository_url: string;
     labels_url: string;
@@ -15,7 +15,7 @@ type Issue = {
     updated_at: string;
     closed_at: string | null;
     state: string;
+    summary?: string;
 };
 export declare function GetIssues(octokit: Octokit, query: string): Promise<Issue[]>;
 export declare function IssuesToMarkdown(issues: Issue[]): string;
-export {};

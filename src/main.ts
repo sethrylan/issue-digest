@@ -9,6 +9,8 @@ import {
   GetDiscussionCategories
 } from './discussions.js'
 import { GetIssues, IssuesToMarkdown } from './issues.js'
+import { GetTimelineForIssue } from './events.js'
+import { TimelineSummary } from './models.js'
 
 /**
  * The main function for the action.
@@ -38,10 +40,15 @@ export async function run(): Promise<void> {
       core.getInput('discussionCategory'),
       'General'
     )
+    const models = withDefault(core.getInput('models'), 'false')
+    const modelsEnabled = models !== 'false'
 
     const workflowRunUrl: string = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
-    const footer: string = `<hr /><em>This discussion was prompted <a href='https://github.com/search?q=${query}'>by a search query</a> in a <a href='${workflowRunUrl}'>workflow run</a> using <a href='https://github.com/sethrylan/issue-digest'>issue-digest</a>.</em>`
 
+    const footerModelsDisclaimer = modelsEnabled
+      ? ` This workflow uses <a href="https://github.com/marketplace/models">GitHub Models</a> to summarize the issues at the time of writing; review the linked issues for the latest and most accurate info.`
+      : ''
+    const footer: string = `<hr /><em>This discussion was prompted <a href='https://github.com/search?q=${query}'>by a search query</a> in a <a href='${workflowRunUrl}'>workflow run</a> using <a href='https://github.com/sethrylan/issue-digest'>issue-digest</a>.${footerModelsDisclaimer}</em>`
     const MyOctokit = Octokit.plugin(paginateGraphQL)
     const octokit = new MyOctokit({ auth: process.env.GITHUB_TOKEN })
 
@@ -92,6 +99,29 @@ export async function run(): Promise<void> {
     }
 
     console.log(`Discussion found: ${foundDiscussion.url}`)
+
+    if (modelsEnabled) {
+      await Promise.all(
+        issues.map(async (issue) => {
+          try {
+            console.log(`Fetching timeline for issue: ${issue.html_url}`)
+            const timeline = await GetTimelineForIssue(octokit, issue)
+            console.log(`Timeline: ${JSON.stringify(timeline)}`)
+            const completion = await TimelineSummary(
+              `${JSON.stringify(timeline)}`,
+              query
+            )
+            console.log(`Completion: ${completion}`)
+            issue.summary = completion
+          } catch (error) {
+            console.error(
+              `Error fetching timeline for issue: ${issue.html_url}`
+            )
+            console.error(error)
+          }
+        })
+      )
+    }
 
     // Add a comment to the discussion
     const resp = await AddComment(
