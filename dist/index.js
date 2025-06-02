@@ -34454,12 +34454,16 @@ async function GetTimelineForIssue(octokit, issue, startDate) {
         response.data.map((event) => {
             timelineEvents.push(event);
             // Filter for only timeline events that are updated or created after the start date
+            coreExports.debug(`Event: ${JSON.stringify(event)}`);
+            coreExports.debug(`Start date: ${startDate.toISOString()}`);
             if ('updated_at' in event && new Date(event.updated_at) > startDate) {
                 timelineEvents.push(event);
+                coreExports.debug(`adding event because updated_at is after start date`);
             }
             else if ('created_at' in event &&
                 new Date(event.created_at) > startDate) {
                 timelineEvents.push(event);
+                coreExports.debug(`adding event because updated_at is after start date`);
             }
         });
     }

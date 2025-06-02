@@ -1,5 +1,6 @@
 import { Octokit } from 'octokit'
 import { Issue } from './issues.js'
+import * as core from '@actions/core'
 
 // a subset of the Timeline event object, to avoid too much context
 export type TimelineEvent = {
@@ -59,13 +60,17 @@ export async function GetTimelineForIssue(
     response.data.map((event) => {
       timelineEvents.push(event as unknown as TimelineEvent)
       // Filter for only timeline events that are updated or created after the start date
+      core.debug(`Event: ${JSON.stringify(event)}`)
+      core.debug(`Start date: ${startDate.toISOString()}`)
       if ('updated_at' in event && new Date(event.updated_at) > startDate) {
         timelineEvents.push(event as unknown as TimelineEvent)
+        core.debug(`adding event because updated_at is after start date`)
       } else if (
         'created_at' in event &&
         new Date(event.created_at) > startDate
       ) {
         timelineEvents.push(event as unknown as TimelineEvent)
+        core.debug(`adding event because updated_at is after start date`)
       }
     })
   }
