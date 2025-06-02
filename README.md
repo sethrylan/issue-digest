@@ -74,7 +74,7 @@ jobs:
     steps:
       - id: last
         run: |
-          echo "monday=$(date -d 'Monday' '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          echo "monday=$(date -d 'last Monday' '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
       - uses: sethrylan/issue-digest@b920bb8465f5a0682caa908ba8d943bc3dfc6129
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
