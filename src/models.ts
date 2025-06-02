@@ -27,9 +27,6 @@ export async function TimelineSummary(
       },
       { role: 'user', content: timelines }
     ],
-    temperature: 1.0,
-    top_p: 1.0,
-    max_tokens: 1000,
     model: modelName
   })
 
