@@ -1,7 +1,7 @@
 import { formatDistanceToNow } from 'date-fns'
 import { Octokit } from 'octokit'
 
-type Issue = {
+export type Issue = {
   url: string
   repository_url: string
   labels_url: string
@@ -17,6 +17,7 @@ type Issue = {
   updated_at: string
   closed_at: string | null
   state: string
+  summary?: string
 }
 
 export async function GetIssues(
@@ -25,7 +26,7 @@ export async function GetIssues(
 ): Promise<Issue[]> {
   // https://github.com/octokit/plugin-rest-endpoint-methods.js/blob/main/docs/search/issuesAndPullRequests.md
   // https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests
-
+  // Example response: https://api.github.com/search/issues?q=%7Bquery%7D&advanced_search=true
   const issues = []
   for await (const response of octokit.paginate.iterator(
     octokit.rest.search.issuesAndPullRequests,
@@ -52,6 +53,10 @@ export function IssuesToMarkdown(issues: Issue[]): string {
       markdown += `(created ${formatDistanceToNow(new Date(issue.created_at), { addSuffix: true })})`
     }
     markdown += '\n'
+    if (issue.summary) {
+      markdown += `   * ${issue.summary}`
+      markdown += '\n'
+    }
   }
   return markdown
 }
