@@ -51,7 +51,7 @@ jobs:
   issue-digest:
     runs-on: ubuntu-latest
     steps:
-      - uses: sethrylan/issue-digest@b920bb8465f5a0682caa908ba8d943bc3dfc6129
+      - uses: sethrylan/issue-digest@0eeb2ed746035642644fa2a92c7db1d89e5dc9fa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -75,7 +75,7 @@ jobs:
       - id: last
         run: |
           echo "monday=$(date -d 'last Monday' '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-      - uses: sethrylan/issue-digest@b920bb8465f5a0682caa908ba8d943bc3dfc6129
+      - uses: sethrylan/issue-digest@0eeb2ed746035642644fa2a92c7db1d89e5dc9fa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -101,11 +101,12 @@ jobs:
   issue-digest:
     runs-on: ubuntu-latest
     steps:
-      - uses: sethrylan/issue-digest@b920bb8465f5a0682caa908ba8d943bc3dfc6129
+      - uses: sethrylan/issue-digest@0eeb2ed746035642644fa2a92c7db1d89e5dc9fa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           models: true
+          lookback: 4hr # optional, defeaults to 24hr; this can help to trim the context to recent changes
 ```
 
 ## Common Errors

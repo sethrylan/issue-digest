@@ -40657,10 +40657,11 @@ async function TimelineSummary(timelines, query) {
         messages: [
             {
                 role: 'system',
-                content: `I am summarizing bot. Given a list of timeline data, I summarize the most relevant changes in one sentence. 
-          I am succinct and helpful. I don't need to give specific dates or timestamps. If mentioning username/login, I
-          always format as \`@username\`, with the backticks. I don't need to mention the name or number of the issue, 
-          because that will already be known. The original query is ${query}, and I should use the created_at and updated_at
+                content: `I am summarizing bot. Given a list of timeline data, I summarize the most relevant changes in one sentence.
+          I am succinct and helpful. I don't need to give specific dates or timestamps. I don't need to include any events
+          performed by users with "[bot]" in their name. It is very important that I always surround usernames with 
+          backticks so that I don't ping humans. I don't need to mention the name or number of the issue, because that 
+          will already be known. The original query is ${query}, and I should use the created_at and updated_at
           timestamps to determine the order and relevance of events to the original query.`
             },
             { role: 'user', content: timelines }
@@ -40778,7 +40779,6 @@ async function run() {
                     console.log(`Fetching timeline for issue: ${issue.html_url}`);
                     const startDate = subMinutes(new Date(), parse(lookback, 'm') || 1440);
                     const timeline = await GetTimelineForIssue(octokit, issue, startDate);
-                    console.log(`Timeline: ${JSON.stringify(timeline)}`);
                     const completion = await TimelineSummary(`${JSON.stringify(timeline)}`, query);
                     console.log(`Completion: ${completion}`);
                     issue.summary = completion;
