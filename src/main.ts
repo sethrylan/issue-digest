@@ -120,7 +120,6 @@ export async function run(): Promise<void> {
               issue,
               startDate
             )
-            console.log(`Timeline: ${JSON.stringify(timeline)}`)
             const completion = await TimelineSummary(
               `${JSON.stringify(timeline)}`,
               query
