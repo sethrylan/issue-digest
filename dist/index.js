@@ -34383,12 +34383,6 @@ async function GetTimelineForIssue(octokit, issue) {
     })) {
         response.data.map((event) => {
             timelineEvents.push(event);
-            // Filter for only timeline events that are updated or created after the start date
-            // if ('updated_at' in event && new Date(event.updated_at) > startDate) {
-            //   timelineEvents.push(event as unknown as TimelineEvent)
-            // } else if ('created_at' in event && new Date(event.created_at) > startDate) {
-            //   timelineEvents.push(event as unknown as TimelineEvent)
-            // }
         });
     }
     return timelineEvents;
@@ -40589,9 +40583,6 @@ async function TimelineSummary(timelines, query) {
             },
             { role: 'user', content: timelines }
         ],
-        temperature: 1.0,
-        top_p: 1.0,
-        max_tokens: 1000,
         model: modelName
     });
     return response.choices[0].message.content || '';
