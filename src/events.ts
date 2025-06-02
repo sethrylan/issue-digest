@@ -56,12 +56,6 @@ export async function GetTimelineForIssue(
   )) {
     response.data.map((event) => {
       timelineEvents.push(event as unknown as TimelineEvent)
-      // Filter for only timeline events that are updated or created after the start date
-      // if ('updated_at' in event && new Date(event.updated_at) > startDate) {
-      //   timelineEvents.push(event as unknown as TimelineEvent)
-      // } else if ('created_at' in event && new Date(event.created_at) > startDate) {
-      //   timelineEvents.push(event as unknown as TimelineEvent)
-      // }
     })
   }
   return timelineEvents
