@@ -38,9 +38,11 @@
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@octokit/plugin-paginate-graphql": "^5.2.4",
+    "@types/parse-duration": "^0.1.0",
     "date-fns": "^4.1.0",
     "octokit": "^4.1.0",
-    "openai": "^4.96.0"
+    "openai": "^4.96.0",
+    "parse-duration": "^2.1.4"
   },
   "devDependencies": {
     "@eslint/compat": "^1.2.8",

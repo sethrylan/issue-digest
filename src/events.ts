@@ -30,11 +30,13 @@ export type TimelineEvent = {
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param issueNumber - Issue number
+ * @param startDate - Date to filter events (only events after this date will be included)
  * @returns Promise resolving to an array of timeline events
  */
 export async function GetTimelineForIssue(
   octokit: Octokit,
-  issue: Issue
+  issue: Issue,
+  startDate: Date
 ): Promise<TimelineEvent[]> {
   const path = new URL(issue.html_url).pathname.split('/')
   const owner = path[1]
@@ -56,6 +58,15 @@ export async function GetTimelineForIssue(
   )) {
     response.data.map((event) => {
       timelineEvents.push(event as unknown as TimelineEvent)
+      // Filter for only timeline events that are updated or created after the start date
+      if ('updated_at' in event && new Date(event.updated_at) > startDate) {
+        timelineEvents.push(event as unknown as TimelineEvent)
+      } else if (
+        'created_at' in event &&
+        new Date(event.created_at) > startDate
+      ) {
+        timelineEvents.push(event as unknown as TimelineEvent)
+      }
     })
   }
   return timelineEvents

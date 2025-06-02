@@ -21685,11 +21685,11 @@ function requireUtil$1 () {
 	return util$1;
 }
 
-var parse$1;
+var parse$2;
 var hasRequiredParse;
 
 function requireParse () {
-	if (hasRequiredParse) return parse$1;
+	if (hasRequiredParse) return parse$2;
 	hasRequiredParse = 1;
 
 	const { maxNameValuePairSize, maxAttributeValueSize } = requireConstants$1();
@@ -22003,11 +22003,11 @@ function requireParse () {
 	  return parseUnparsedAttributes(unparsedAttributes, cookieAttributeList)
 	}
 
-	parse$1 = {
+	parse$2 = {
 	  parseSetCookie,
 	  parseUnparsedAttributes
 	};
-	return parse$1;
+	return parse$2;
 }
 
 var cookies;
@@ -27651,7 +27651,7 @@ function expand(template, context) {
 }
 
 // pkg/dist-src/parse.js
-function parse(options) {
+function parse$1(options) {
   let method = options.method.toUpperCase();
   let url = (options.url || "/").replace(/:([a-z]\w+)/g, "{$1}");
   let headers = Object.assign({}, options.headers);
@@ -27717,7 +27717,7 @@ function parse(options) {
 
 // pkg/dist-src/endpoint-with-defaults.js
 function endpointWithDefaults(defaults, route, options) {
-  return parse(merge(defaults, route, options));
+  return parse$1(merge(defaults, route, options));
 }
 
 // pkg/dist-src/with-defaults.js
@@ -27728,7 +27728,7 @@ function withDefaults$2(oldDefaults, newDefaults) {
     DEFAULTS: DEFAULTS2,
     defaults: withDefaults$2.bind(null, DEFAULTS2),
     merge: merge.bind(null, DEFAULTS2),
-    parse
+    parse: parse$1
   });
 }
 
@@ -32928,6 +32928,13 @@ async function AddComment(octokit, discussionIdToComment, body) {
 
 /**
  * @constant
+ * @name millisecondsInMinute
+ * @summary Milliseconds in 1 minute
+ */
+const millisecondsInMinute = 60000;
+
+/**
+ * @constant
  * @name minutesInMonth
  * @summary Minutes in 1 month.
  */
@@ -33082,6 +33089,38 @@ function normalizeDates(context, ...dates) {
     context || dates.find((date) => typeof date === "object"),
   );
   return dates.map(normalize);
+}
+
+/**
+ * The {@link addMinutes} function options.
+ */
+
+/**
+ * @name addMinutes
+ * @category Minute Helpers
+ * @summary Add the specified number of minutes to the given date.
+ *
+ * @description
+ * Add the specified number of minutes to the given date.
+ *
+ * @typeParam DateType - The `Date` type, the function operates on. Gets inferred from passed arguments. Allows to use extensions like [`UTCDate`](https://github.com/date-fns/utc).
+ * @typeParam ResultDate - The result `Date` type, it is the type returned from the context function if it is passed, or inferred from the arguments.
+ *
+ * @param date - The date to be changed
+ * @param amount - The amount of minutes to be added.
+ * @param options - An object with options
+ *
+ * @returns The new date with the minutes added
+ *
+ * @example
+ * // Add 30 minutes to 10 July 2014 12:00:00:
+ * const result = addMinutes(new Date(2014, 6, 10, 12, 0), 30)
+ * //=> Thu Jul 10 2014 12:30:00
+ */
+function addMinutes(date, amount, options) {
+  const _date = toDate(date);
+  _date.setTime(_date.getTime() + amount * millisecondsInMinute);
+  return _date;
 }
 
 /**
@@ -34324,6 +34363,36 @@ function formatDistanceToNow(date, options) {
   return formatDistance(date, constructNow(date), options);
 }
 
+/**
+ * The {@link subMinutes} function options.
+ */
+
+/**
+ * @name subMinutes
+ * @category Minute Helpers
+ * @summary Subtract the specified number of minutes from the given date.
+ *
+ * @description
+ * Subtract the specified number of minutes from the given date.
+ *
+ * @typeParam DateType - The `Date` type, the function operates on. Gets inferred from passed arguments. Allows to use extensions like [`UTCDate`](https://github.com/date-fns/utc).
+ * @typeParam ResultDate - The result `Date` type, it is the type returned from the context function if it is passed, or inferred from the arguments.
+ *
+ * @param date - The date to be changed
+ * @param amount - The amount of minutes to be subtracted.
+ * @param options - An object with options
+ *
+ * @returns The new date with the minutes subtracted
+ *
+ * @example
+ * // Subtract 30 minutes from 10 July 2014 12:00:00:
+ * const result = subMinutes(new Date(2014, 6, 10, 12, 0), 30)
+ * //=> Thu Jul 10 2014 11:30:00
+ */
+function subMinutes(date, amount, options) {
+  return addMinutes(date, -amount);
+}
+
 async function GetIssues(octokit, query) {
     // https://github.com/octokit/plugin-rest-endpoint-methods.js/blob/main/docs/search/issuesAndPullRequests.md
     // https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests
@@ -34367,9 +34436,10 @@ function IssuesToMarkdown(issues) {
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param issueNumber - Issue number
+ * @param startDate - Date to filter events (only events after this date will be included)
  * @returns Promise resolving to an array of timeline events
  */
-async function GetTimelineForIssue(octokit, issue) {
+async function GetTimelineForIssue(octokit, issue, startDate) {
     const path = new URL(issue.html_url).pathname.split('/');
     const owner = path[1];
     const repo = path[2];
@@ -34383,6 +34453,14 @@ async function GetTimelineForIssue(octokit, issue) {
     })) {
         response.data.map((event) => {
             timelineEvents.push(event);
+            // Filter for only timeline events that are updated or created after the start date
+            if ('updated_at' in event && new Date(event.updated_at) > startDate) {
+                timelineEvents.push(event);
+            }
+            else if ('created_at' in event &&
+                new Date(event.created_at) > startDate) {
+                timelineEvents.push(event);
+            }
         });
     }
     return timelineEvents;
@@ -40588,6 +40666,60 @@ async function TimelineSummary(timelines, query) {
     return response.choices[0].message.content || '';
 }
 
+const unit = Object.create(null);
+const m = 60000, h = m * 60, d = h * 24, y = d * 365.25;
+
+unit.year = unit.yr = unit.y = y;
+unit.month = unit.mo = unit.mth = y / 12;
+unit.week = unit.wk = unit.w = d * 7;
+unit.day = unit.d = d;
+unit.hour = unit.hr = unit.h = h;
+unit.minute = unit.min = unit.m = m;
+unit.second = unit.sec = unit.s = 1000;
+unit.millisecond = unit.millisec = unit.ms = 1;
+unit.microsecond = unit.microsec =  unit.us = unit.µs = 1e-3;
+unit.nanosecond = unit.nanosec = unit.ns = 1e-6;
+
+unit.group = ',';
+unit.decimal = '.';
+unit.placeholder = ' _';
+
+const durationRE = /((?:\d{1,16}(?:\.\d{1,16})?|\.\d{1,16})(?:[eE][-+]?\d{1,4})?)\s?([\p{L}]{0,14})/gu;
+
+parse.unit = unit;
+
+/**
+ * convert `str` to ms
+ *
+ * @param {string} str
+ * @param {string} format
+ * @return {number|null}
+ */
+function parse(str = '', format = 'ms') {
+  let result = null, prevUnits;
+
+  String(str)
+    .replace(new RegExp(`(\\d)[${parse.unit.placeholder}${parse.unit.group}](\\d)`, 'g'), '$1$2')  // clean up group separators / placeholders
+    .replace(parse.unit.decimal, '.') // normalize decimal separator
+    .replace(durationRE, (_, n, units) => {
+    // if no units, find next smallest units or fall back to format value
+    // eg. 1h30 -> 1h30m
+    if (!units) {
+      if (prevUnits) {
+        for (const u in parse.unit) if (parse.unit[u] < prevUnits) { units = u; break }
+      }
+      else units = format;
+    }
+    else units = units.toLowerCase();
+
+    prevUnits = units = parse.unit[units] || parse.unit[units.replace(/s$/, '')];
+
+    if (units) result = (result || 0) + n * units;
+  });
+
+  return result && ((result / (parse.unit[format] || 1)) * (str[0] === '-' ? -1 : 1))
+}
+
 /**
  * The main function for the action.
  *
@@ -40603,6 +40735,7 @@ async function run() {
         const discussionCategory = withDefault(coreExports.getInput('discussionCategory'), 'General');
         const models = withDefault(coreExports.getInput('models'), 'false');
         const modelsEnabled = models !== 'false';
+        const lookback = withDefault(coreExports.getInput('lookback'), '24h');
         const workflowRunUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
         const footerModelsDisclaimer = modelsEnabled
             ? ` This workflow uses <a href="https://github.com/marketplace/models">GitHub Models</a> to summarize the issues at the time of writing; review the linked issues for the latest and most accurate info.`
@@ -40637,8 +40770,10 @@ async function run() {
         if (modelsEnabled) {
             await Promise.all(issues.map(async (issue) => {
                 try {
+                    // Fetch the timeline for the issue, starting from yesterday
                     console.log(`Fetching timeline for issue: ${issue.html_url}`);
-                    const timeline = await GetTimelineForIssue(octokit, issue);
+                    const startDate = subMinutes(new Date(), parse(lookback, 'm') || 1440);
+                    const timeline = await GetTimelineForIssue(octokit, issue, startDate);
                     console.log(`Timeline: ${JSON.stringify(timeline)}`);
                     const completion = await TimelineSummary(`${JSON.stringify(timeline)}`, query);
                     console.log(`Completion: ${completion}`);

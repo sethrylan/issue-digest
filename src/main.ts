@@ -11,6 +11,8 @@ import {
 import { GetIssues, IssuesToMarkdown } from './issues.js'
 import { GetTimelineForIssue } from './events.js'
 import { TimelineSummary } from './models.js'
+import { subMinutes } from 'date-fns'
+import parseDuration from 'parse-duration'
 
 /**
  * The main function for the action.
@@ -42,6 +44,7 @@ export async function run(): Promise<void> {
     )
     const models = withDefault(core.getInput('models'), 'false')
     const modelsEnabled = models !== 'false'
+    const lookback = withDefault(core.getInput('lookback'), '24h')
 
     const workflowRunUrl: string = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
 
@@ -104,8 +107,19 @@ export async function run(): Promise<void> {
       await Promise.all(
         issues.map(async (issue) => {
           try {
+            // Fetch the timeline for the issue, starting from yesterday
             console.log(`Fetching timeline for issue: ${issue.html_url}`)
-            const timeline = await GetTimelineForIssue(octokit, issue)
+
+            const startDate = subMinutes(
+              new Date(),
+              parseDuration(lookback, 'm') || 1440
+            )
+
+            const timeline = await GetTimelineForIssue(
+              octokit,
+              issue,
+              startDate
+            )
             console.log(`Timeline: ${JSON.stringify(timeline)}`)
             const completion = await TimelineSummary(
               `${JSON.stringify(timeline)}`,

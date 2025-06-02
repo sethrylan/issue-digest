@@ -27,6 +27,7 @@ export type TimelineEvent = {
  * @param owner - Repository owner
  * @param repo - Repository name
  * @param issueNumber - Issue number
+ * @param startDate - Date to filter events (only events after this date will be included)
  * @returns Promise resolving to an array of timeline events
  */
-export declare function GetTimelineForIssue(octokit: Octokit, issue: Issue): Promise<TimelineEvent[]>;
+export declare function GetTimelineForIssue(octokit: Octokit, issue: Issue, startDate: Date): Promise<TimelineEvent[]>;

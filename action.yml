@@ -41,6 +41,10 @@ inputs:
     description: |
       optional: whether to use GitHub Models to summarize the issues
     required: false
+  lookback:
+    description: |
+      optional: time duration (e.g., 2hr, 1w) for event timeline lookback, used for model summary; defaults to 1 day (1d)
+    required: false
 
 outputs:
   discussionUrl:
