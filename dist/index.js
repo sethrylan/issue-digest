@@ -34618,7 +34618,7 @@ function inner_stringify(object, prefix, generateArrayPrefix, commaRoundTrip, al
     let tmp_sc = sideChannel;
     let step = 0;
     let find_flag = false;
-    while ((tmp_sc = tmp_sc.get(sentinel)) !== void 0 && !find_flag) {
+    while ((tmp_sc = tmp_sc.get(sentinel)) !== void undefined && !find_flag) {
         // Where object last appeared in the ref tree
         const pos = tmp_sc.get(object);
         step += 1;
@@ -34682,7 +34682,7 @@ function inner_stringify(object, prefix, generateArrayPrefix, commaRoundTrip, al
             // @ts-expect-error values only
             obj = maybe_map(obj, encoder);
         }
-        obj_keys = [{ value: obj.length > 0 ? obj.join(',') || null : void 0 }];
+        obj_keys = [{ value: obj.length > 0 ? obj.join(',') || null : void undefined }];
     }
     else if (is_array(filter)) {
         obj_keys = filter;
