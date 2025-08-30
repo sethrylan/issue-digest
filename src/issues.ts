@@ -1,5 +1,5 @@
 import { formatDistanceToNow } from 'date-fns'
-import { Octokit } from 'octokit'
+import { MyOctokit } from './octokit-types.js'
 
 export type Issue = {
   url: string
@@ -21,7 +21,7 @@ export type Issue = {
 }
 
 export async function GetIssues(
-  octokit: Octokit,
+  octokit: MyOctokit,
   query: string
 ): Promise<Issue[]> {
   // https://github.com/octokit/plugin-rest-endpoint-methods.js/blob/main/docs/search/issuesAndPullRequests.md

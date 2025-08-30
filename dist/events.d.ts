@@ -1,4 +1,4 @@
-import { Octokit } from 'octokit';
+import { MyOctokit } from './octokit-types.js';
 import { Issue } from './issues.js';
 export type TimelineEvent = {
     url: string;
@@ -30,4 +30,4 @@ export type TimelineEvent = {
  * @param startDate - Date to filter events (only events after this date will be included)
  * @returns Promise resolving to an array of timeline events
  */
-export declare function GetTimelineForIssue(octokit: Octokit, issue: Issue, startDate: Date): Promise<TimelineEvent[]>;
+export declare function GetTimelineForIssue(octokit: MyOctokit, issue: Issue, startDate: Date): Promise<TimelineEvent[]>;
