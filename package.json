@@ -41,7 +41,7 @@
     "@types/parse-duration": "^0.1.0",
     "date-fns": "^4.1.0",
     "octokit": "^4.1.0",
-    "openai": "^4.96.0",
+    "openai": "^5.16.0",
     "parse-duration": "^2.1.4"
   },
   "devDependencies": {
