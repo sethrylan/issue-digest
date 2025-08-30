@@ -1,6 +1,8 @@
 import * as core from '@actions/core'
-import { Octokit } from 'octokit'
+import { Octokit } from '@octokit/core'
 import { paginateGraphQL } from '@octokit/plugin-paginate-graphql'
+import { paginateRest } from '@octokit/plugin-paginate-rest'
+import { restEndpointMethods } from '@octokit/plugin-rest-endpoint-methods'
 import { withDefault, yesterday } from './util.js'
 import {
   AddComment,
@@ -52,7 +54,11 @@ export async function run(): Promise<void> {
       ? ` This workflow uses <a href="https://github.com/marketplace/models">GitHub Models</a> to summarize the issues at the time of writing; review the linked issues for the latest and most accurate info.`
       : ''
     const footer: string = `<hr /><em>This discussion was prompted <a href='https://github.com/search?q=${query}'>by a search query</a> in a <a href='${workflowRunUrl}'>workflow run</a> using <a href='https://github.com/sethrylan/issue-digest'>issue-digest</a>.${footerModelsDisclaimer}</em>`
-    const MyOctokit = Octokit.plugin(paginateGraphQL)
+    const MyOctokit = Octokit.plugin(
+      paginateGraphQL,
+      paginateRest,
+      restEndpointMethods
+    )
     const octokit = new MyOctokit({ auth: process.env.GITHUB_TOKEN })
 
     console.log(`Using query: ${query}`)

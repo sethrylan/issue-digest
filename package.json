@@ -37,10 +37,12 @@
   "license": "MIT",
   "dependencies": {
     "@actions/core": "^1.11.1",
-    "@octokit/plugin-paginate-graphql": "^5.2.4",
+    "@octokit/core": "^7.0.3",
+    "@octokit/plugin-paginate-graphql": "^6.0.0",
+    "@octokit/plugin-paginate-rest": "^13.1.1",
+    "@octokit/plugin-rest-endpoint-methods": "^16.0.0",
     "@types/parse-duration": "^0.1.0",
     "date-fns": "^4.1.0",
-    "octokit": "^4.1.0",
     "openai": "^5.16.0",
     "parse-duration": "^2.1.4"
   },

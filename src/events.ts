@@ -1,4 +1,4 @@
-import { Octokit } from 'octokit'
+import { MyOctokit } from './octokit-types.js'
 import { Issue } from './issues.js'
 import * as core from '@actions/core'
 
@@ -35,7 +35,7 @@ export type TimelineEvent = {
  * @returns Promise resolving to an array of timeline events
  */
 export async function GetTimelineForIssue(
-  octokit: Octokit,
+  octokit: MyOctokit,
   issue: Issue,
   startDate: Date
 ): Promise<TimelineEvent[]> {

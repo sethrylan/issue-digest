@@ -1,8 +1,8 @@
-import { Octokit } from 'octokit'
+import { MyOctokit } from './octokit-types.js'
 import * as core from '@actions/core'
 
 export async function FindDiscussion(
-  octokit: Octokit,
+  octokit: MyOctokit,
   owner: string,
   repo: string,
   title: string,
@@ -50,7 +50,7 @@ export async function FindDiscussion(
 }
 
 export async function GetDiscussionCategories(
-  octokit: Octokit,
+  octokit: MyOctokit,
   owner: string,
   repo: string
 ) {
@@ -74,7 +74,7 @@ export async function GetDiscussionCategories(
 // Create a new discussion
 // https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions
 export async function CreateDiscussion(
-  octokit: Octokit,
+  octokit: MyOctokit,
   repoId: string,
   categoryId: string,
   title: string,
@@ -103,7 +103,7 @@ export async function CreateDiscussion(
 }
 
 export async function AddComment(
-  octokit: Octokit,
+  octokit: MyOctokit,
   discussionIdToComment: string,
   body: string
 ) {
