@@ -1,25 +1,24 @@
 version: 2
 updates:
-  - package-ecosystem: github-actions
-    directory: /
+  - package-ecosystem: gomod
+    directory: "/"
     schedule:
       interval: weekly
-    groups:
-      actions-minor:
-        update-types:
-          - minor
-          - patch
     commit-message:
-      prefix: 'chore: '
+      prefix: "chore(deps): "
+    cooldown:
+      default-days: 7
+    groups:
+      actions-deps:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
-    ignore:
-      - dependency-name: '@types/node'
-        update-types:
-          - 'version-update:semver-major'
+    cooldown:
+      default-days: 7
     groups:
       npm-development:
         dependency-type: development
@@ -31,4 +30,4 @@ updates:
         update-types:
           - patch
     commit-message:
-      prefix: 'chore: '
+      prefix: "chore(deps): "

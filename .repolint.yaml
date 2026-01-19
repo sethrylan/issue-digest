@@ -1,0 +1,11 @@
+# gh-repolint configuration
+# See https://github.com/sethrylan/gh-repolint for documentation
+
+checks:
+  files:
+    - name: ".github/dependabot.yml"
+      reference: "sethrylan/sethrylan/.repolint/npm-dependabot.yml"
+    - name: ".github/workflows/conventional-commits.yml"
+      reference: "sethrylan/sethrylan/.repolint/workflows/conventional-commits.yml"
+    - name: "LICENSE"
+      reference: "sethrylan/sethrylan/.repolint/LICENSE"
