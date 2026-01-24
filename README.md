@@ -1,7 +1,6 @@
 # Issue Digest
 
 ![CI](https://github.com/sethrylan/issue-digest/actions/workflows/ci.yml/badge.svg)
-[![Check dist/](https://github.com/sethrylan/issue-digest/actions/workflows/check-dist.yml/badge.svg)](https://github.com/sethrylan/issue-digest/actions/workflows/check-dist.yml)
 [![CodeQL](https://github.com/sethrylan/issue-digest/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/sethrylan/issue-digest/actions/workflows/codeql-analysis.yml)
 
 A GitHub Action that comments a list of issues. If a discussion with a match
@@ -115,7 +114,7 @@ jobs:
 
 Check the permissions for the calling workflow.
 
-#### No Isuses are found
+#### No Issues are found
 
 Check the permissions for the calling workflow.
 
