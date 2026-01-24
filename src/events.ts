@@ -62,7 +62,11 @@ export async function GetTimelineForIssue(
       // Filter for only timeline events that are updated or created after the start date
       core.debug(`Event: ${JSON.stringify(event)}`)
       core.debug(`Start date: ${startDate.toISOString()}`)
-      if ('updated_at' in event && new Date(event.updated_at) > startDate) {
+      if (
+        'updated_at' in event &&
+        event.updated_at &&
+        new Date(event.updated_at) > startDate
+      ) {
         timelineEvents.push(event as unknown as TimelineEvent)
         core.debug(`adding event because updated_at is after start date`)
       } else if (
