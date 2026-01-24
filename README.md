@@ -115,7 +115,7 @@ jobs:
 
 Check the permissions for the calling workflow.
 
-#### No Isuses are found
+#### No Issues are found
 
 Check the permissions for the calling workflow.
 
