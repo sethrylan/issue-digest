@@ -36,7 +36,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@actions/core": "^1.11.1",
+    "@actions/core": "^2.0.2",
     "@octokit/core": "^7.0.3",
     "@octokit/plugin-paginate-graphql": "^6.0.0",
     "@octokit/plugin-paginate-rest": "^13.1.1",
