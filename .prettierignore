@@ -4,3 +4,4 @@ node_modules/
 coverage/
 *.yml
 *.yaml
+*.md

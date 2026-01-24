@@ -1,11 +1,10 @@
 # Issue Digest
 
 ![CI](https://github.com/sethrylan/issue-digest/actions/workflows/ci.yml/badge.svg)
-[![Check dist/](https://github.com/sethrylan/issue-digest/actions/workflows/check-dist.yml/badge.svg)](https://github.com/sethrylan/issue-digest/actions/workflows/check-dist.yml)
 [![CodeQL](https://github.com/sethrylan/issue-digest/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/sethrylan/issue-digest/actions/workflows/codeql-analysis.yml)
 
-A GitHub Action that comments a list of issues. If a discussion with a match
-`title` is found, that discussion is used, or a new discussion is created.
+A GitHub Action that comments a list of issues. If a discussion with a matching
+`title` is found, that discussion is used, otherwise a new discussion is created.
 
 ## Development
 
@@ -51,7 +50,7 @@ jobs:
   issue-digest:
     runs-on: ubuntu-latest
     steps:
-      - uses: sethrylan/issue-digest@0eeb2ed746035642644fa2a92c7db1d89e5dc9fa
+      - uses: sethrylan/issue-digest@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -75,7 +74,7 @@ jobs:
       - id: last
         run: |
           echo "monday=$(date -d 'last Monday' '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-      - uses: sethrylan/issue-digest@0eeb2ed746035642644fa2a92c7db1d89e5dc9fa
+      - uses: sethrylan/issue-digest@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -101,13 +100,33 @@ jobs:
   issue-digest:
     runs-on: ubuntu-latest
     steps:
-      - uses: sethrylan/issue-digest@0eeb2ed746035642644fa2a92c7db1d89e5dc9fa
+      - uses: sethrylan/issue-digest@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           models: true
-          lookback: 4hr # optional, defeaults to 24hr; this can help to trim the context to recent changes
+          lookback: 4hr # optional, defaults to 1d; this can help to trim the context to recent changes
 ```
+
+## Inputs
+
+| Name | Description | Required | Default |
+| --- | --- | --- | --- |
+| `repo` | Repository to digest | No | Current repository |
+| `since` | Datetime to look back to | No | 24 hours ago |
+| `query` | Issue query string | No | `repo:<repo> updated:>=<since>` |
+| `title` | Title of discussion post | No | `Issue Digest <current date UTC>` |
+| `intro` | Text/Markdown for the discussion intro | No | |
+| `comment` | Text/Markdown for the comment intro | No | |
+| `discussionCategory` | Discussion category to use | No | `General` |
+| `models` | Use GitHub Models to summarize issues | No | `false` |
+| `lookback` | Time duration for event timeline lookback (e.g., `2hr`, `1w`) | No | `1d` |
+
+## Outputs
+
+| Name | Description |
+| --- | --- |
+| `discussionUrl` | The URL of the discussion post created or updated |
 
 ## Common Errors
 
@@ -115,7 +134,7 @@ jobs:
 
 Check the permissions for the calling workflow.
 
-#### No Isuses are found
+### No Issues are found
 
 Check the permissions for the calling workflow.
 
