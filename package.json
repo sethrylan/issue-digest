@@ -39,7 +39,7 @@
     "@actions/core": "^2.0.2",
     "@octokit/core": "^7.0.3",
     "@octokit/plugin-paginate-graphql": "^6.0.0",
-    "@octokit/plugin-paginate-rest": "^13.1.1",
+    "@octokit/plugin-paginate-rest": "^14.0.0",
     "@octokit/plugin-rest-endpoint-methods": "^17.0.0",
     "@types/parse-duration": "^0.3.0",
     "date-fns": "^4.1.0",
