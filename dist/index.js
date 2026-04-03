@@ -33907,7 +33907,7 @@ const safeJSON = (text) => {
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const VERSION = '6.16.0'; // x-release-please-version
+const VERSION = '6.33.0'; // x-release-please-version
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 const isRunningInBrowser = () => {
@@ -34527,6 +34527,11 @@ function stringify(object, opts = {}) {
     return joined.length > 0 ? prefix + joined : '';
 }
 
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+function stringifyQuery(query) {
+    return stringify(query, { arrayFormat: 'brackets' });
+}
+
 function concatBytes(buffers) {
     let length = 0;
     for (const buffer of buffers) {
@@ -34745,7 +34750,7 @@ class Stream {
         this.controller = controller;
         __classPrivateFieldSet(this, _Stream_client, client);
     }
-    static fromSSEResponse(response, controller, client) {
+    static fromSSEResponse(response, controller, client, synthesizeEventData) {
         let consumed = false;
         const logger = client ? loggerFor(client) : console;
         async function* iterator() {
@@ -34775,7 +34780,7 @@ class Stream {
                         if (data && data.error) {
                             throw new APIError(undefined, data.error, undefined, response.headers);
                         }
-                        yield data;
+                        yield synthesizeEventData ? { event: sse.event, data } : data;
                     }
                     else {
                         let data;
@@ -35025,9 +35030,9 @@ async function defaultParseResponse(client, props) {
             // Note: there is an invariant here that isn't represented in the type system
             // that if you set `stream: true` the response type must also be `Stream<T>`
             if (props.options.__streamClass) {
-                return props.options.__streamClass.fromSSEResponse(response, props.controller, client);
+                return props.options.__streamClass.fromSSEResponse(response, props.controller, client, props.options.__synthesizeEventData);
             }
-            return Stream.fromSSEResponse(response, props.controller, client);
+            return Stream.fromSSEResponse(response, props.controller, client, props.options.__synthesizeEventData);
         }
         // fetch refuses to read the body when the status code is 204.
         if (response.status === 204) {
@@ -35040,6 +35045,11 @@ async function defaultParseResponse(client, props) {
         const mediaType = contentType?.split(';')[0]?.trim();
         const isJSON = mediaType?.includes('application/json') || mediaType?.endsWith('+json');
         if (isJSON) {
+            const contentLength = response.headers.get('content-length');
+            if (contentLength === '0') {
+                // if there is no content we can't do anything
+                return undefined;
+            }
             const json = await response.json();
             return addRequestID(json, response);
         }
@@ -35575,6 +35585,9 @@ const createPathTagFunction = (pathEncoder = encodeURIPath) => function path(sta
 const path = /* @__PURE__ */ createPathTagFunction(encodeURIPath);
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Given a list of messages comprising a conversation, the model will return a response.
+ */
 let Messages$1 = class Messages extends APIResource {
     /**
      * Get the messages in a stored chat completion. Only Chat Completions that have
@@ -36937,6 +36950,9 @@ class ChatCompletionStreamingRunner extends ChatCompletionStream {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Given a list of messages comprising a conversation, the model will return a response.
+ */
 let Completions$1 = class Completions extends APIResource {
     constructor() {
         super(...arguments);
@@ -37107,16 +37123,21 @@ const buildHeaders = (newHeaders) => {
 };
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Turn audio into text or text into audio.
+ */
 class Speech extends APIResource {
     /**
      * Generates audio from the input text.
+     *
+     * Returns the audio file content, or a stream of audio events.
      *
      * @example
      * ```ts
      * const speech = await client.audio.speech.create({
      *   input: 'input',
      *   model: 'string',
-     *   voice: 'ash',
+     *   voice: 'string',
      * });
      *
      * const content = await speech.blob();
@@ -37134,6 +37155,9 @@ class Speech extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Turn audio into text or text into audio.
+ */
 class Transcriptions extends APIResource {
     create(body, options) {
         return this._client.post('/audio/transcriptions', multipartFormRequestOptions({
@@ -37146,6 +37170,9 @@ class Transcriptions extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Turn audio into text or text into audio.
+ */
 class Translations extends APIResource {
     create(body, options) {
         return this._client.post('/audio/translations', multipartFormRequestOptions({ body, ...options, __metadata: { model: body.model } }, this._client));
@@ -37166,6 +37193,9 @@ Audio.Translations = Translations;
 Audio.Speech = Speech;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Create large batches of API requests to run asynchronously.
+ */
 class Batches extends APIResource {
     /**
      * Creates and executes a batch from an uploaded file of requests
@@ -37196,16 +37226,14 @@ class Batches extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Build Assistants that can call models and use tools.
+ */
 class Assistants extends APIResource {
     /**
      * Create an assistant with a model and instructions.
      *
-     * @example
-     * ```ts
-     * const assistant = await client.beta.assistants.create({
-     *   model: 'gpt-4o',
-     * });
-     * ```
+     * @deprecated
      */
     create(body, options) {
         return this._client.post('/assistants', {
@@ -37217,12 +37245,7 @@ class Assistants extends APIResource {
     /**
      * Retrieves an assistant.
      *
-     * @example
-     * ```ts
-     * const assistant = await client.beta.assistants.retrieve(
-     *   'assistant_id',
-     * );
-     * ```
+     * @deprecated
      */
     retrieve(assistantID, options) {
         return this._client.get(path `/assistants/${assistantID}`, {
@@ -37233,12 +37256,7 @@ class Assistants extends APIResource {
     /**
      * Modifies an assistant.
      *
-     * @example
-     * ```ts
-     * const assistant = await client.beta.assistants.update(
-     *   'assistant_id',
-     * );
-     * ```
+     * @deprecated
      */
     update(assistantID, body, options) {
         return this._client.post(path `/assistants/${assistantID}`, {
@@ -37250,13 +37268,7 @@ class Assistants extends APIResource {
     /**
      * Returns a list of assistants.
      *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const assistant of client.beta.assistants.list()) {
-     *   // ...
-     * }
-     * ```
+     * @deprecated
      */
     list(query = {}, options) {
         return this._client.getAPIList('/assistants', (CursorPage), {
@@ -37268,11 +37280,7 @@ class Assistants extends APIResource {
     /**
      * Delete an assistant.
      *
-     * @example
-     * ```ts
-     * const assistantDeleted =
-     *   await client.beta.assistants.delete('assistant_id');
-     * ```
+     * @deprecated
      */
     delete(assistantID, options) {
         return this._client.delete(path `/assistants/${assistantID}`, {
@@ -37351,7 +37359,7 @@ Realtime$1.TranscriptionSessions = TranscriptionSessions;
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 class Sessions extends APIResource {
     /**
-     * Create a ChatKit session
+     * Create a ChatKit session.
      *
      * @example
      * ```ts
@@ -37370,7 +37378,9 @@ class Sessions extends APIResource {
         });
     }
     /**
-     * Cancel a ChatKit session
+     * Cancel an active ChatKit session and return its most recent metadata.
+     *
+     * Cancelling prevents new requests from using the issued client secret.
      *
      * @example
      * ```ts
@@ -37389,7 +37399,7 @@ class Sessions extends APIResource {
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 let Threads$1 = class Threads extends APIResource {
     /**
-     * Retrieve a ChatKit thread
+     * Retrieve a ChatKit thread by its identifier.
      *
      * @example
      * ```ts
@@ -37404,7 +37414,7 @@ let Threads$1 = class Threads extends APIResource {
         });
     }
     /**
-     * List ChatKit threads
+     * List ChatKit threads with optional pagination and user filters.
      *
      * @example
      * ```ts
@@ -37422,7 +37432,7 @@ let Threads$1 = class Threads extends APIResource {
         });
     }
     /**
-     * Delete a ChatKit thread
+     * Delete a ChatKit thread along with its items and stored attachments.
      *
      * @example
      * ```ts
@@ -37438,7 +37448,7 @@ let Threads$1 = class Threads extends APIResource {
         });
     }
     /**
-     * List ChatKit thread items
+     * List items that belong to a ChatKit thread.
      *
      * @example
      * ```ts
@@ -37468,6 +37478,8 @@ ChatKit.Threads = Threads$1;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 /**
+ * Build Assistants that can call models and use tools.
+ *
  * @deprecated The Assistants API is deprecated in favor of the Responses API
  */
 class Messages extends APIResource {
@@ -37536,6 +37548,8 @@ class Messages extends APIResource {
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 /**
+ * Build Assistants that can call models and use tools.
+ *
  * @deprecated The Assistants API is deprecated in favor of the Responses API
  */
 class Steps extends APIResource {
@@ -38148,6 +38162,8 @@ _a$1 = AssistantStream, _AssistantStream_addEvent = function _AssistantStream_ad
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 /**
+ * Build Assistants that can call models and use tools.
+ *
  * @deprecated The Assistants API is deprecated in favor of the Responses API
  */
 let Runs$1 = class Runs extends APIResource {
@@ -38163,6 +38179,7 @@ let Runs$1 = class Runs extends APIResource {
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             stream: params.stream ?? false,
+            __synthesizeEventData: true,
         });
     }
     /**
@@ -38293,6 +38310,7 @@ let Runs$1 = class Runs extends APIResource {
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             stream: params.stream ?? false,
+            __synthesizeEventData: true,
         });
     }
     /**
@@ -38317,6 +38335,8 @@ Runs$1.Steps = Steps;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 /**
+ * Build Assistants that can call models and use tools.
+ *
  * @deprecated The Assistants API is deprecated in favor of the Responses API
  */
 class Threads extends APIResource {
@@ -38377,6 +38397,7 @@ class Threads extends APIResource {
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             stream: body.stream ?? false,
+            __synthesizeEventData: true,
         });
     }
     /**
@@ -38414,6 +38435,9 @@ Beta.Assistants = Assistants;
 Beta.Threads = Threads;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Given a prompt, the model will return one or more predicted completions, and can also return the probabilities of alternative tokens at each position.
+ */
 class Completions extends APIResource {
     create(body, options) {
         return this._client.post('/completions', { body, ...options, stream: body.stream ?? false });
@@ -38421,7 +38445,7 @@ class Completions extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
-class Content extends APIResource {
+let Content$2 = class Content extends APIResource {
     /**
      * Retrieve Container File Content
      */
@@ -38433,13 +38457,13 @@ class Content extends APIResource {
             __binaryResponse: true,
         });
     }
-}
+};
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 let Files$2 = class Files extends APIResource {
     constructor() {
         super(...arguments);
-        this.content = new Content(this._client);
+        this.content = new Content$2(this._client);
     }
     /**
      * Create a Container File
@@ -38448,7 +38472,7 @@ let Files$2 = class Files extends APIResource {
      * a JSON request with a file ID.
      */
     create(containerID, body, options) {
-        return this._client.post(path `/containers/${containerID}/files`, multipartFormRequestOptions({ body, ...options }, this._client));
+        return this._client.post(path `/containers/${containerID}/files`, maybeMultipartFormRequestOptions({ body, ...options }, this._client));
     }
     /**
      * Retrieve Container File
@@ -38477,7 +38501,7 @@ let Files$2 = class Files extends APIResource {
         });
     }
 };
-Files$2.Content = Content;
+Files$2.Content = Content$2;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 class Containers extends APIResource {
@@ -38516,6 +38540,9 @@ class Containers extends APIResource {
 Containers.Files = Files$2;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage conversations and conversation items.
+ */
 class Items extends APIResource {
     /**
      * Create items in a conversation with the given ID.
@@ -38551,6 +38578,9 @@ class Items extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage conversations and conversation items.
+ */
 class Conversations extends APIResource {
     constructor() {
         super(...arguments);
@@ -38584,6 +38614,9 @@ class Conversations extends APIResource {
 Conversations.Items = Items;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Get a vector representation of a given input that can be easily consumed by machine learning models and algorithms.
+ */
 class Embeddings extends APIResource {
     /**
      * Creates an embedding vector representing the input text.
@@ -38634,6 +38667,9 @@ class Embeddings extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage and run evals in the OpenAI platform.
+ */
 class OutputItems extends APIResource {
     /**
      * Get an evaluation run output item by ID.
@@ -38652,6 +38688,9 @@ class OutputItems extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage and run evals in the OpenAI platform.
+ */
 class Runs extends APIResource {
     constructor() {
         super(...arguments);
@@ -38699,6 +38738,9 @@ class Runs extends APIResource {
 Runs.OutputItems = OutputItems;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage and run evals in the OpenAI platform.
+ */
 class Evals extends APIResource {
     constructor() {
         super(...arguments);
@@ -38743,11 +38785,14 @@ class Evals extends APIResource {
 Evals.Runs = Runs;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Files are used to upload documents that can be used with features like Assistants and Fine-tuning.
+ */
 let Files$1 = class Files extends APIResource {
     /**
      * Upload a file that can be used across various endpoints. Individual files can be
-     * up to 512 MB, and the size of all files uploaded by one organization can be up
-     * to 1 TB.
+     * up to 512 MB, and each project can store up to 2.5 TB of files in total. There
+     * is no organization-wide storage limit.
      *
      * - The Assistants API supports files up to 2 million tokens and of specific file
      *   types. See the
@@ -38822,6 +38867,9 @@ class Methods extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage fine-tuning jobs to tailor a model to your specific training data.
+ */
 let Graders$1 = class Graders extends APIResource {
     /**
      * Run a grader.
@@ -38875,6 +38923,9 @@ class Alpha extends APIResource {
 Alpha.Graders = Graders$1;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage fine-tuning jobs to tailor a model to your specific training data.
+ */
 class Permissions extends APIResource {
     /**
      * **NOTE:** Calling this endpoint requires an [admin API key](../admin-api-keys).
@@ -38902,19 +38953,32 @@ class Permissions extends APIResource {
      * Organization owners can use this endpoint to view all permissions for a
      * fine-tuned model checkpoint.
      *
-     * @example
-     * ```ts
-     * const permission =
-     *   await client.fineTuning.checkpoints.permissions.retrieve(
-     *     'ft-AF1WoRqd3aJAHsqc9NY7iL8F',
-     *   );
-     * ```
+     * @deprecated Retrieve is deprecated. Please swap to the paginated list method instead.
      */
     retrieve(fineTunedModelCheckpoint, query = {}, options) {
         return this._client.get(path `/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, {
             query,
             ...options,
         });
+    }
+    /**
+     * **NOTE:** This endpoint requires an [admin API key](../admin-api-keys).
+     *
+     * Organization owners can use this endpoint to view all permissions for a
+     * fine-tuned model checkpoint.
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const permissionListResponse of client.fineTuning.checkpoints.permissions.list(
+     *   'ft-AF1WoRqd3aJAHsqc9NY7iL8F',
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    list(fineTunedModelCheckpoint, query = {}, options) {
+        return this._client.getAPIList(path `/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, (ConversationCursorPage), { query, ...options });
     }
     /**
      * **NOTE:** This endpoint requires an [admin API key](../admin-api-keys).
@@ -38950,6 +39014,9 @@ let Checkpoints$1 = class Checkpoints extends APIResource {
 Checkpoints$1.Permissions = Permissions;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage fine-tuning jobs to tailor a model to your specific training data.
+ */
 class Checkpoints extends APIResource {
     /**
      * List checkpoints for a fine-tuning job.
@@ -38970,6 +39037,9 @@ class Checkpoints extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Manage fine-tuning jobs to tailor a model to your specific training data.
+ */
 class Jobs extends APIResource {
     constructor() {
         super(...arguments);
@@ -39111,6 +39181,9 @@ class Graders extends APIResource {
 Graders.GraderModels = GraderModels;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Given a prompt and/or an input image, the model will generate a new image.
+ */
 class Images extends APIResource {
     /**
      * Creates a variation of a given image. This endpoint only supports `dall-e-2`.
@@ -39134,6 +39207,9 @@ class Images extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * List and describe the various models available in the API.
+ */
 class Models extends APIResource {
     /**
      * Retrieves a model instance, providing basic information about the model such as
@@ -39159,6 +39235,9 @@ class Models extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Given text and/or image inputs, classifies if those inputs are potentially harmful.
+ */
 class Moderations extends APIResource {
     /**
      * Classifies if text and/or image inputs are potentially harmful. Learn more in
@@ -39241,6 +39320,20 @@ class Calls extends APIResource {
 class ClientSecrets extends APIResource {
     /**
      * Create a Realtime client secret with an associated session configuration.
+     *
+     * Client secrets are short-lived tokens that can be passed to a client app, such
+     * as a web frontend or mobile client, which grants access to the Realtime API
+     * without leaking your main API key. You can configure a custom TTL for each
+     * client secret.
+     *
+     * You can also attach session configuration options to the client secret, which
+     * will be applied to any sessions created using that client secret, but these can
+     * also be overridden by the client connection.
+     *
+     * [Learn more about authentication with client secrets over WebRTC](https://platform.openai.com/docs/guides/realtime-webrtc).
+     *
+     * Returns the created client secret and the effective session object. The client
+     * secret is a string that looks like `ek_1234`.
      *
      * @example
      * ```ts
@@ -39667,7 +39760,10 @@ class InputItems extends APIResource {
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 class InputTokens extends APIResource {
     /**
-     * Get input token counts
+     * Returns input token counts of the request.
+     *
+     * Returns an object with `object` set to `response.input_tokens` and an
+     * `input_tokens` count.
      *
      * @example
      * ```ts
@@ -39749,12 +39845,17 @@ class Responses extends APIResource {
         return this._client.post(path `/responses/${responseID}/cancel`, options);
     }
     /**
-     * Compact conversation
+     * Compact a conversation. Returns a compacted response object.
+     *
+     * Learn when and how to compact long-running conversations in the
+     * [conversation state guide](https://platform.openai.com/docs/guides/conversation-state#managing-the-context-window).
+     * For ZDR-compatible compaction details, see
+     * [Compaction (advanced)](https://platform.openai.com/docs/guides/conversation-state#compaction-advanced).
      *
      * @example
      * ```ts
      * const compactedResponse = await client.responses.compact({
-     *   model: 'gpt-5.2',
+     *   model: 'gpt-5.4',
      * });
      * ```
      */
@@ -39766,6 +39867,117 @@ Responses.InputItems = InputItems;
 Responses.InputTokens = InputTokens;
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+let Content$1 = class Content extends APIResource {
+    /**
+     * Download a skill zip bundle by its ID.
+     */
+    retrieve(skillID, options) {
+        return this._client.get(path `/skills/${skillID}/content`, {
+            ...options,
+            headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
+            __binaryResponse: true,
+        });
+    }
+};
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+class Content extends APIResource {
+    /**
+     * Download a skill version zip bundle.
+     */
+    retrieve(version, params, options) {
+        const { skill_id } = params;
+        return this._client.get(path `/skills/${skill_id}/versions/${version}/content`, {
+            ...options,
+            headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
+            __binaryResponse: true,
+        });
+    }
+}
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+class Versions extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.content = new Content(this._client);
+    }
+    /**
+     * Create a new immutable skill version.
+     */
+    create(skillID, body = {}, options) {
+        return this._client.post(path `/skills/${skillID}/versions`, maybeMultipartFormRequestOptions({ body, ...options }, this._client));
+    }
+    /**
+     * Get a specific skill version.
+     */
+    retrieve(version, params, options) {
+        const { skill_id } = params;
+        return this._client.get(path `/skills/${skill_id}/versions/${version}`, options);
+    }
+    /**
+     * List skill versions for a skill.
+     */
+    list(skillID, query = {}, options) {
+        return this._client.getAPIList(path `/skills/${skillID}/versions`, (CursorPage), {
+            query,
+            ...options,
+        });
+    }
+    /**
+     * Delete a skill version.
+     */
+    delete(version, params, options) {
+        const { skill_id } = params;
+        return this._client.delete(path `/skills/${skill_id}/versions/${version}`, options);
+    }
+}
+Versions.Content = Content;
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+class Skills extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.content = new Content$1(this._client);
+        this.versions = new Versions(this._client);
+    }
+    /**
+     * Create a new skill.
+     */
+    create(body = {}, options) {
+        return this._client.post('/skills', maybeMultipartFormRequestOptions({ body, ...options }, this._client));
+    }
+    /**
+     * Get a skill by its ID.
+     */
+    retrieve(skillID, options) {
+        return this._client.get(path `/skills/${skillID}`, options);
+    }
+    /**
+     * Update the default version pointer for a skill.
+     */
+    update(skillID, body, options) {
+        return this._client.post(path `/skills/${skillID}`, { body, ...options });
+    }
+    /**
+     * List all skills for the current project.
+     */
+    list(query = {}, options) {
+        return this._client.getAPIList('/skills', (CursorPage), { query, ...options });
+    }
+    /**
+     * Delete a skill by its ID.
+     */
+    delete(skillID, options) {
+        return this._client.delete(path `/skills/${skillID}`, options);
+    }
+}
+Skills.Content = Content$1;
+Skills.Versions = Versions;
+
+// File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Use Uploads to upload large files in multiple parts.
+ */
 class Parts extends APIResource {
     /**
      * Adds a
@@ -39786,6 +39998,9 @@ class Parts extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
+/**
+ * Use Uploads to upload large files in multiple parts.
+ */
 class Uploads extends APIResource {
     constructor() {
         super(...arguments);
@@ -39811,12 +40026,16 @@ class Uploads extends APIResource {
      * For guidance on the proper filename extensions for each purpose, please follow
      * the documentation on
      * [creating a File](https://platform.openai.com/docs/api-reference/files/create).
+     *
+     * Returns the Upload object with status `pending`.
      */
     create(body, options) {
         return this._client.post('/uploads', { body, ...options });
     }
     /**
      * Cancels the Upload. No Parts may be added after an Upload is cancelled.
+     *
+     * Returns the Upload object with status `cancelled`.
      */
     cancel(uploadID, options) {
         return this._client.post(path `/uploads/${uploadID}/cancel`, options);
@@ -39834,7 +40053,9 @@ class Uploads extends APIResource {
      *
      * The number of bytes uploaded upon completion must match the number of bytes
      * initially specified when creating the Upload object. No Parts may be added after
-     * an Upload is completed.
+     * an Upload is completed. Returns the Upload object with status `completed`,
+     * including an additional `file` property containing the created usable File
+     * object.
      */
     complete(uploadID, body, options) {
         return this._client.post(path `/uploads/${uploadID}/complete`, { body, ...options });
@@ -40194,31 +40415,39 @@ VectorStores.FileBatches = FileBatches;
 // File generated from our OpenAPI spec by Stainless. See CONTRIBUTING.md for details.
 class Videos extends APIResource {
     /**
-     * Create a video
+     * Create a new video generation job from a prompt and optional reference assets.
      */
     create(body, options) {
-        return this._client.post('/videos', maybeMultipartFormRequestOptions({ body, ...options }, this._client));
+        return this._client.post('/videos', multipartFormRequestOptions({ body, ...options }, this._client));
     }
     /**
-     * Retrieve a video
+     * Fetch the latest metadata for a generated video.
      */
     retrieve(videoID, options) {
         return this._client.get(path `/videos/${videoID}`, options);
     }
     /**
-     * List videos
+     * List recently generated videos for the current project.
      */
     list(query = {}, options) {
         return this._client.getAPIList('/videos', (ConversationCursorPage), { query, ...options });
     }
     /**
-     * Delete a video
+     * Permanently delete a completed or failed video and its stored assets.
      */
     delete(videoID, options) {
         return this._client.delete(path `/videos/${videoID}`, options);
     }
     /**
-     * Download video content
+     * Create a character from an uploaded video.
+     */
+    createCharacter(body, options) {
+        return this._client.post('/videos/characters', multipartFormRequestOptions({ body, ...options }, this._client));
+    }
+    /**
+     * Download the generated video bytes or a derived preview asset.
+     *
+     * Streams the rendered video content for the specified video job.
      */
     downloadContent(videoID, query = {}, options) {
         return this._client.get(path `/videos/${videoID}/content`, {
@@ -40229,7 +40458,26 @@ class Videos extends APIResource {
         });
     }
     /**
-     * Create a video remix
+     * Create a new video generation job by editing a source video or existing
+     * generated video.
+     */
+    edit(body, options) {
+        return this._client.post('/videos/edits', multipartFormRequestOptions({ body, ...options }, this._client));
+    }
+    /**
+     * Create an extension of a completed video.
+     */
+    extend(body, options) {
+        return this._client.post('/videos/extensions', multipartFormRequestOptions({ body, ...options }, this._client));
+    }
+    /**
+     * Fetch a character.
+     */
+    getCharacter(characterID, options) {
+        return this._client.get(path `/videos/characters/${characterID}`, options);
+    }
+    /**
+     * Create a remix of a completed video using a refreshed prompt.
      */
     remix(videoID, body, options) {
         return this._client.post(path `/videos/${videoID}/remix`, maybeMultipartFormRequestOptions({ body, ...options }, this._client));
@@ -40354,26 +40602,57 @@ class OpenAI {
     constructor({ baseURL = readEnv('OPENAI_BASE_URL'), apiKey = readEnv('OPENAI_API_KEY'), organization = readEnv('OPENAI_ORG_ID') ?? null, project = readEnv('OPENAI_PROJECT_ID') ?? null, webhookSecret = readEnv('OPENAI_WEBHOOK_SECRET') ?? null, ...opts } = {}) {
         _OpenAI_instances.add(this);
         _OpenAI_encoder.set(this, void 0);
+        /**
+         * Given a prompt, the model will return one or more predicted completions, and can also return the probabilities of alternative tokens at each position.
+         */
         this.completions = new Completions(this);
         this.chat = new Chat(this);
+        /**
+         * Get a vector representation of a given input that can be easily consumed by machine learning models and algorithms.
+         */
         this.embeddings = new Embeddings(this);
+        /**
+         * Files are used to upload documents that can be used with features like Assistants and Fine-tuning.
+         */
         this.files = new Files$1(this);
+        /**
+         * Given a prompt and/or an input image, the model will generate a new image.
+         */
         this.images = new Images(this);
         this.audio = new Audio(this);
+        /**
+         * Given text and/or image inputs, classifies if those inputs are potentially harmful.
+         */
         this.moderations = new Moderations(this);
+        /**
+         * List and describe the various models available in the API.
+         */
         this.models = new Models(this);
         this.fineTuning = new FineTuning(this);
         this.graders = new Graders(this);
         this.vectorStores = new VectorStores(this);
         this.webhooks = new Webhooks(this);
         this.beta = new Beta(this);
+        /**
+         * Create large batches of API requests to run asynchronously.
+         */
         this.batches = new Batches(this);
+        /**
+         * Use Uploads to upload large files in multiple parts.
+         */
         this.uploads = new Uploads(this);
         this.responses = new Responses(this);
         this.realtime = new Realtime(this);
+        /**
+         * Manage conversations and conversation items.
+         */
         this.conversations = new Conversations(this);
+        /**
+         * Manage and run evals in the OpenAI platform.
+         */
         this.evals = new Evals(this);
         this.containers = new Containers(this);
+        this.skills = new Skills(this);
         this.videos = new Videos(this);
         if (apiKey === undefined) {
             throw new OpenAIError('Missing credentials. Please pass an `apiKey`, or set the `OPENAI_API_KEY` environment variable.');
@@ -40440,7 +40719,7 @@ class OpenAI {
         return buildHeaders([{ Authorization: `Bearer ${this.apiKey}` }]);
     }
     stringifyQuery(query) {
-        return stringify(query, { arrayFormat: 'brackets' });
+        return stringifyQuery(query);
     }
     getUserAgent() {
         return `${this.constructor.name}/JS ${VERSION}`;
@@ -40478,8 +40757,9 @@ class OpenAI {
             new URL(path)
             : new URL(baseURL + (baseURL.endsWith('/') && path.startsWith('/') ? path.slice(1) : path));
         const defaultQuery = this.defaultQuery();
-        if (!isEmptyObj(defaultQuery)) {
-            query = { ...defaultQuery, ...query };
+        const pathQuery = Object.fromEntries(url.searchParams);
+        if (!isEmptyObj(defaultQuery) || !isEmptyObj(pathQuery)) {
+            query = { ...pathQuery, ...defaultQuery, ...query };
         }
         if (typeof query === 'object' && query && !Array.isArray(query)) {
             url.search = this.stringifyQuery(query);
@@ -40631,7 +40911,9 @@ class OpenAI {
         return { response, options, controller, requestLogID, retryOfRequestLogID, startTime };
     }
     getAPIList(path, Page, opts) {
-        return this.requestAPIList(Page, { method: 'get', path, ...opts });
+        return this.requestAPIList(Page, opts && 'then' in opts ?
+            opts.then((opts) => ({ method: 'get', path, ...opts }))
+            : { method: 'get', path, ...opts });
     }
     requestAPIList(Page, options) {
         const request = this.makeRequest(options, null, undefined);
@@ -40639,9 +40921,10 @@ class OpenAI {
     }
     async fetchWithTimeout(url, init, ms, controller) {
         const { signal, method, ...options } = init || {};
+        const abort = this._makeAbort(controller);
         if (signal)
-            signal.addEventListener('abort', () => controller.abort());
-        const timeout = setTimeout(() => controller.abort(), ms);
+            signal.addEventListener('abort', abort, { once: true });
+        const timeout = setTimeout(abort, ms);
         const isReadableBody = (globalThis.ReadableStream && options.body instanceof globalThis.ReadableStream) ||
             (typeof options.body === 'object' && options.body !== null && Symbol.asyncIterator in options.body);
         const fetchOptions = {
@@ -40706,9 +40989,9 @@ class OpenAI {
                 timeoutMillis = Date.parse(retryAfterHeader) - Date.now();
             }
         }
-        // If the API asks us to wait a certain amount of time (and it's a reasonable amount),
-        // just do what it says, but otherwise calculate a default
-        if (!(timeoutMillis && 0 <= timeoutMillis && timeoutMillis < 60 * 1000)) {
+        // If the API asks us to wait a certain amount of time, just do what it
+        // says, but otherwise calculate a default
+        if (timeoutMillis === undefined) {
             const maxRetries = options.maxRetries ?? this.maxRetries;
             timeoutMillis = this.calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries);
         }
@@ -40772,6 +41055,11 @@ class OpenAI {
         this.validateHeaders(headers);
         return headers.values;
     }
+    _makeAbort(controller) {
+        // note: we can't just inline this method inside `fetchWithTimeout()` because then the closure
+        //       would capture all request options, and cause a memory leak.
+        return () => controller.abort();
+    }
     buildBody({ options: { body, headers: rawHeaders } }) {
         if (!body) {
             return { bodyHeaders: undefined, body: undefined };
@@ -40799,6 +41087,13 @@ class OpenAI {
             (Symbol.asyncIterator in body ||
                 (Symbol.iterator in body && 'next' in body && typeof body.next === 'function'))) {
             return { bodyHeaders: undefined, body: ReadableStreamFrom(body) };
+        }
+        else if (typeof body === 'object' &&
+            headers.values.get('content-type') === 'application/x-www-form-urlencoded') {
+            return {
+                bodyHeaders: { 'content-type': 'application/x-www-form-urlencoded' },
+                body: this.stringifyQuery(body),
+            };
         }
         else {
             return __classPrivateFieldGet(this, _OpenAI_encoder, "f").call(this, { body, headers });
@@ -40845,6 +41140,7 @@ OpenAI.Realtime = Realtime;
 OpenAI.Conversations = Conversations;
 OpenAI.Evals = Evals;
 OpenAI.Containers = Containers;
+OpenAI.Skills = Skills;
 OpenAI.Videos = Videos;
 
 async function TimelineSummary(timelines, query) {
