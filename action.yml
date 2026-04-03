@@ -52,5 +52,5 @@ outputs:
       The URL of the discussion post created or updated
 
 runs:
-  using: node20
+  using: node24
   main: dist/index.js

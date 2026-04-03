@@ -1,0 +1,21 @@
+import { MyOctokit } from './octokit-types.js';
+export type Issue = {
+    url: string;
+    repository_url: string;
+    labels_url: string;
+    comments_url: string;
+    events_url: string;
+    html_url: string;
+    id: number;
+    node_id: string;
+    number: number;
+    title: string;
+    locked: boolean;
+    created_at: string;
+    updated_at: string;
+    closed_at: string | null;
+    state: string;
+    summary?: string;
+};
+export declare function GetIssues(octokit: MyOctokit, query: string): Promise<Issue[]>;
+export declare function IssuesToMarkdown(issues: Issue[]): string;
