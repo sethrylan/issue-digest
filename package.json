@@ -42,7 +42,7 @@
     "@octokit/plugin-paginate-rest": "^14.0.0",
     "@octokit/plugin-rest-endpoint-methods": "^17.0.0",
     "@types/parse-duration": "^0.3.0",
-    "date-fns": "^4.1.0",
+    "date-fns": "^4.3.0",
     "openai": "^6.16.0",
     "parse-duration": "^2.1.6"
   },
