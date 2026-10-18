@@ -37,14 +37,14 @@
   "license": "MIT",
   "dependencies": {
     "@actions/core": "^3.0.1",
-    "@octokit/core": "^7.0.3",
+    "@octokit/core": "^7.0.8",
     "@octokit/plugin-paginate-graphql": "^6.0.0",
     "@octokit/plugin-paginate-rest": "^16.0.0",
     "@octokit/plugin-rest-endpoint-methods": "^18.0.0",
     "@types/parse-duration": "^0.3.0",
     "date-fns": "^4.4.0",
     "openai": "^7.27.0",
-    "parse-duration": "^2.1.6"
+    "parse-duration": "^2.1.9"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.1",
