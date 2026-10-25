@@ -43,7 +43,7 @@
     "@octokit/plugin-rest-endpoint-methods": "^18.0.0",
     "@types/parse-duration": "^0.3.0",
     "date-fns": "^4.4.0",
-    "openai": "^7.27.0",
+    "openai": "^7.38.0",
     "parse-duration": "^2.1.9"
   },
   "devDependencies": {
