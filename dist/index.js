@@ -35095,6 +35095,10 @@ const sensitiveQueryNames = new Set([
     'password',
     'clientsecret',
     'signingsecret',
+    'sig',
+    'signature',
+    'xgoogsignature',
+    'xgoogcredential',
     'xamzsecuritytoken',
     'xamzsignature',
     'xamzcredential',
@@ -35898,7 +35902,7 @@ function addRequestID(value, response) {
 }
 
 /** Version of the installed OpenAI SDK package. */
-const VERSION = '7.27.0'; // x-release-please-version
+const VERSION = '7.38.0'; // x-release-please-version
 
 const isRunningInBrowser = () => {
     return (
@@ -38193,7 +38197,9 @@ function makeFile(fileBits, fileName, options) {
  * Directory components separated by either `/` or `\\` are discarded unless an
  * explicitly supplied `name` or `filename` opts into preserving its path. Preserved
  * paths must be safe and relative, and use forward slashes. Paths inferred from URLs and filesystem streams
- * discard their directories.
+ * discard their directories. URL filenames decode valid UTF-8 percent escapes,
+ * except that ASCII control characters stay escaped for multipart compatibility.
+ * A basename stays encoded if decoding would introduce literal multipart escape sequences.
  */
 function getName(value, options) {
     if (typeof value !== 'object' || value === null) {
@@ -38207,7 +38213,8 @@ function getName(value, options) {
     const url = 'url' in value && value.url && String(value.url);
     if (url) {
         try {
-            return basename(new URL(url).pathname);
+            const filename = basename(new URL(url).pathname);
+            return filename === undefined ? undefined : basename(decodeURLFilename(filename));
         }
         catch {
             return basename(url);
@@ -38218,6 +38225,21 @@ function getName(value, options) {
 }
 function basename(value) {
     return value.split(/[\\/]/).pop() || undefined;
+}
+function decodeURLFilename(filename) {
+    try {
+        const decodedFilename = decodeURIComponent(filename);
+        // Fetch multipart receivers interpret these spellings as CR, LF, or a quote.
+        if (/%(?:0[AD]|22)/i.test(decodedFilename)) {
+            return filename;
+        }
+        // oxlint-disable-next-line no-control-regex -- Multipart parsers reject unescaped ASCII controls in filenames.
+        return decodedFilename.replace(/[\u0000-\u001F\u007F]/gu, encodeURIComponent);
+    }
+    catch {
+        // A malformed escape leaves the original URL segment usable as a filename.
+        return filename;
+    }
 }
 function normalizeFilenamePath(value) {
     const normalized = value.replace(/\\/g, '/');
@@ -38799,12 +38821,12 @@ const createPathTagFunction = (pathEncoder = encodeURIPath) => function path(sta
 const path = /* @__PURE__ */ createPathTagFunction(encodeURIPath);
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1C(options, buildOptions) {
+function resolveResourceRequestOptions$1F(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
 // private RequestOptions fields so older handwritten runtimes still compile.
-const normalizeRequestOptionsForQueryKeys$U = new Set([
+const normalizeRequestOptionsForQueryKeys$V = new Set([
     'method',
     'path',
     'query',
@@ -38825,20 +38847,20 @@ const normalizeRequestOptionsForQueryKeys$U = new Set([
     '__security',
     '__synthesizeEventData',
 ]);
-function normalizeRequestOptionsForQuery$U(value, queryKeys, options) {
+function normalizeRequestOptionsForQuery$V(value, queryKeys, options) {
     if (typeof value !== 'object' || value === null)
         return undefined;
     // Optional never fields can still be explicitly undefined unless consumers
     // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
     const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
     const keys = entries.map(([key]) => key);
-    const requestOnly = keys.some((key) => normalizeRequestOptionsForQueryKeys$U.has(key) && !queryKeys.includes(key));
+    const requestOnly = keys.some((key) => normalizeRequestOptionsForQueryKeys$V.has(key) && !queryKeys.includes(key));
     if (!requestOnly)
         return undefined;
     // Declared query fields, including stream, must use the query argument.
     // Mixing them with request-only options is ambiguous and could change the return type.
     if (options !== undefined ||
-        keys.some((key) => !normalizeRequestOptionsForQueryKeys$U.has(key) || queryKeys.includes(key))) {
+        keys.some((key) => !normalizeRequestOptionsForQueryKeys$V.has(key) || queryKeys.includes(key))) {
         throw new TypeError('Query parameters and request options must be passed as separate arguments.');
     }
     // The query position must not gain authority to change the request destination
@@ -38859,19 +38881,42 @@ function normalizeRequestOptionsForQuery$U(value, queryKeys, options) {
  */
 let Messages$1 = class Messages extends APIResource {
     list(completionID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$U(query, ['after', 'limit', 'order'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$V(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/chat/completions/${completionID}/messages`, (CursorPage), resolveResourceRequestOptions$1C(options, (options) => ({
+        return this._client.getAPIList(path `/chat/completions/${completionID}/messages`, (CursorPage), resolveResourceRequestOptions$1F(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
         })));
     }
 };
+
+function normalizeChatCompletionChunk(chunk) {
+    if (!Array.isArray(chunk?.choices)) {
+        // SAFETY: This is an opaque provider record, with no choices to normalize.
+        // Preserve the existing SSE pass-through; the SDK does not validate these records.
+        return chunk;
+    }
+    return {
+        ...chunk,
+        choices: chunk.choices.map((choice) => ({ ...choice, finish_reason: choice.finish_reason ?? null })),
+    };
+}
+function normalizeChatCompletionStream(stream) {
+    const iterator = stream[Symbol.asyncIterator].bind(stream);
+    stream[Symbol.asyncIterator] = async function* normalizedChunks() {
+        const source = { [Symbol.asyncIterator]: iterator };
+        for await (const chunk of source) {
+            yield normalizeChatCompletionChunk(chunk);
+        }
+    };
+    // SAFETY: The installed iterator normalizes every wire chunk before exposing it.
+    return stream;
+}
 
 /** Returns whether an optional chat completion tool contains a function-tool definition. */
 function isChatCompletionFunctionTool(tool) {
@@ -41173,6 +41218,28 @@ _a$1 = AbstractChatCompletionRunner, _AbstractChatCompletionRunner_completionArr
             total.completion_tokens += usage.completion_tokens;
             total.prompt_tokens += usage.prompt_tokens;
             total.total_tokens += usage.total_tokens;
+            for (const key of ['completion_tokens_details', 'prompt_tokens_details']) {
+                const details = usage[key];
+                if (isObj(details)) {
+                    // SAFETY: Both token detail types contain only optional numeric counts.
+                    const totalDetails = (total[key] ?? (total[key] = {}));
+                    for (const name in details) {
+                        if (!hasOwn(details, name)) {
+                            continue;
+                        }
+                        const count = details[name];
+                        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- API-compatible endpoints can return nonnumeric detail values despite the declared response type.
+                        if (typeof count === 'number') {
+                            Object.defineProperty(totalDetails, name, {
+                                value: (hasOwn(totalDetails, name) ? (totalDetails[name] ?? 0) : 0) + count,
+                                enumerable: true,
+                                configurable: true,
+                                writable: true,
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
     return total;
@@ -42386,7 +42453,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                 this._addMessage(message.message);
                 continue;
             }
-            const chunk = item;
+            const chunk = normalizeChatCompletionChunk(item);
             if (chatId && chunk.id && chatId !== chunk.id) {
                 // A new request has been made.
                 this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
@@ -42764,7 +42831,13 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             }
             let choice = snapshot.choices[index];
             if (!choice) {
-                const newChoice = { finish_reason, index, message: {}, logprobs: null, ...other };
+                const newChoice = {
+                    finish_reason: finish_reason ?? null,
+                    index,
+                    message: {},
+                    logprobs: null,
+                    ...other,
+                };
                 snapshot.choices[index] = newChoice;
                 choice = newChoice;
             }
@@ -43235,7 +43308,173 @@ class ChatCompletionStreamingRunner extends ChatCompletionStream {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1B(options, buildOptions) {
+function resolveResourceRequestOptions$1E(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const normalizeRequestOptionsForQueryKeys$U = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function normalizeRequestOptionsForQuery$U(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => normalizeRequestOptionsForQueryKeys$U.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !normalizeRequestOptionsForQueryKeys$U.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+/**
+ * Given a list of messages comprising a conversation, the model will return a response.
+ */
+let Completions$1 = class Completions extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.messages = new Messages$1(this._client);
+    }
+    create(body, options) {
+        return this._client
+            .post('/chat/completions', resolveResourceRequestOptions$1E(options, (options) => ({
+            body,
+            ...options,
+            stream: body.stream ?? false,
+            __security: { bearerAuth: true },
+        })))
+            ._thenUnwrap((result) => body.stream ? normalizeChatCompletionStream(result) : result);
+    }
+    /**
+     * Get a stored chat completion. Only Chat Completions that have been created with
+     * the `store` parameter set to `true` will be returned.
+     *
+     * @example
+     * ```ts
+     * const chatCompletion =
+     *   await client.chat.completions.retrieve('completion_id');
+     * ```
+     */
+    retrieve(completionID, options) {
+        return this._client.get(path `/chat/completions/${completionID}`, resolveResourceRequestOptions$1E(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+    }
+    /**
+     * Modify a stored chat completion. Only Chat Completions that have been created
+     * with the `store` parameter set to `true` can be modified. Currently, the only
+     * supported modification is to update the `metadata` field.
+     *
+     * @example
+     * ```ts
+     * const chatCompletion = await client.chat.completions.update(
+     *   'completion_id',
+     *   { metadata: { foo: 'string' } },
+     * );
+     * ```
+     */
+    update(completionID, body, options) {
+        return this._client.post(path `/chat/completions/${completionID}`, resolveResourceRequestOptions$1E(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$U(query, ['after', 'limit', 'metadata', 'model', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/chat/completions', (CursorPage), resolveResourceRequestOptions$1E(options, (options) => ({
+            query,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Delete a stored chat completion. Only Chat Completions that have been created
+     * with the `store` parameter set to `true` can be deleted.
+     *
+     * @example
+     * ```ts
+     * const chatCompletionDeleted =
+     *   await client.chat.completions.delete('completion_id');
+     * ```
+     */
+    delete(completionID, options) {
+        return this._client.delete(path `/chat/completions/${completionID}`, resolveResourceRequestOptions$1E(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+    }
+    parse(body, options) {
+        validateInputTools(body.tools);
+        return this._client.chat.completions
+            .create(body, {
+            ...options,
+            __metadata: { ...options?.__metadata, helperMethod: 'chat.completions.parse' },
+        })
+            ._thenUnwrap((completion) => parseChatCompletion(completion, body));
+    }
+    runTools(body, options) {
+        if (body.stream) {
+            return ChatCompletionStreamingRunner.runTools(this._client, body, options);
+        }
+        return ChatCompletionRunner.runTools(this._client, body, options);
+    }
+    /**
+     * Creates a chat completion stream
+     */
+    stream(body, options) {
+        return ChatCompletionStream.createChatCompletion(this._client, body, options);
+    }
+};
+Completions$1.Messages = Messages$1;
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+class Chat extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.completions = new Completions$1(this._client);
+    }
+}
+Chat.Completions = Completions$1;
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1D(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -43290,116 +43529,76 @@ function normalizeRequestOptionsForQuery$T(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-/**
- * Given a list of messages comprising a conversation, the model will return a response.
- */
-let Completions$1 = class Completions extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.messages = new Messages$1(this._client);
-    }
+class AdminAPIKeys extends APIResource {
+    /**
+     * Create an organization admin API key
+     *
+     * @example
+     * ```ts
+     * const adminAPIKey =
+     *   await client.admin.organization.adminAPIKeys.create({
+     *     name: 'New Admin Key',
+     *   });
+     * ```
+     */
     create(body, options) {
-        return this._client.post('/chat/completions', resolveResourceRequestOptions$1B(options, (options) => ({
+        return this._client.post('/organization/admin_api_keys', resolveResourceRequestOptions$1D(options, (options) => ({
             body,
             ...options,
-            stream: body.stream ?? false,
-            __security: { bearerAuth: true },
+            __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Get a stored chat completion. Only Chat Completions that have been created with
-     * the `store` parameter set to `true` will be returned.
+     * Retrieve a single organization API key
      *
      * @example
      * ```ts
-     * const chatCompletion =
-     *   await client.chat.completions.retrieve('completion_id');
+     * const adminAPIKey =
+     *   await client.admin.organization.adminAPIKeys.retrieve(
+     *     'key_id',
+     *   );
      * ```
      */
-    retrieve(completionID, options) {
-        return this._client.get(path `/chat/completions/${completionID}`, resolveResourceRequestOptions$1B(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
-    }
-    /**
-     * Modify a stored chat completion. Only Chat Completions that have been created
-     * with the `store` parameter set to `true` can be modified. Currently, the only
-     * supported modification is to update the `metadata` field.
-     *
-     * @example
-     * ```ts
-     * const chatCompletion = await client.chat.completions.update(
-     *   'completion_id',
-     *   { metadata: { foo: 'string' } },
-     * );
-     * ```
-     */
-    update(completionID, body, options) {
-        return this._client.post(path `/chat/completions/${completionID}`, resolveResourceRequestOptions$1B(options, (options) => ({
-            body,
+    retrieve(keyID, options) {
+        return this._client.get(path `/organization/admin_api_keys/${keyID}`, resolveResourceRequestOptions$1D(options, (options) => ({
             ...options,
-            __security: { bearerAuth: true },
+            __security: { adminAPIKeyAuth: true },
         })));
     }
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$T(query, ['after', 'limit', 'metadata', 'model', 'order'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$T(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/chat/completions', (CursorPage), resolveResourceRequestOptions$1B(options, (options) => ({
+        return this._client.getAPIList('/organization/admin_api_keys', (CursorPage), resolveResourceRequestOptions$1D(options, (options) => ({
             query,
             ...options,
-            __security: { bearerAuth: true },
+            __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Delete a stored chat completion. Only Chat Completions that have been created
-     * with the `store` parameter set to `true` can be deleted.
+     * Delete an organization admin API key
      *
      * @example
      * ```ts
-     * const chatCompletionDeleted =
-     *   await client.chat.completions.delete('completion_id');
+     * const adminAPIKey =
+     *   await client.admin.organization.adminAPIKeys.delete(
+     *     'key_id',
+     *   );
      * ```
      */
-    delete(completionID, options) {
-        return this._client.delete(path `/chat/completions/${completionID}`, resolveResourceRequestOptions$1B(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
-    }
-    parse(body, options) {
-        validateInputTools(body.tools);
-        return this._client.chat.completions
-            .create(body, {
+    delete(keyID, options) {
+        return this._client.delete(path `/organization/admin_api_keys/${keyID}`, resolveResourceRequestOptions$1D(options, (options) => ({
             ...options,
-            __metadata: { ...options?.__metadata, helperMethod: 'chat.completions.parse' },
-        })
-            ._thenUnwrap((completion) => parseChatCompletion(completion, body));
-    }
-    runTools(body, options) {
-        if (body.stream) {
-            return ChatCompletionStreamingRunner.runTools(this._client, body, options);
-        }
-        return ChatCompletionRunner.runTools(this._client, body, options);
-    }
-    /**
-     * Creates a chat completion stream
-     */
-    stream(body, options) {
-        return ChatCompletionStream.createChatCompletion(this._client, body, options);
-    }
-};
-Completions$1.Messages = Messages$1;
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-class Chat extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.completions = new Completions$1(this._client);
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
 }
-Chat.Completions = Completions$1;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1A(options, buildOptions) {
+function resolveResourceRequestOptions$1C(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -43454,68 +43653,30 @@ function normalizeRequestOptionsForQuery$S(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class AdminAPIKeys extends APIResource {
-    /**
-     * Create an organization admin API key
-     *
-     * @example
-     * ```ts
-     * const adminAPIKey =
-     *   await client.admin.organization.adminAPIKeys.create({
-     *     name: 'New Admin Key',
-     *   });
-     * ```
-     */
-    create(body, options) {
-        return this._client.post('/organization/admin_api_keys', resolveResourceRequestOptions$1A(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Retrieve a single organization API key
-     *
-     * @example
-     * ```ts
-     * const adminAPIKey =
-     *   await client.admin.organization.adminAPIKeys.retrieve(
-     *     'key_id',
-     *   );
-     * ```
-     */
-    retrieve(keyID, options) {
-        return this._client.get(path `/organization/admin_api_keys/${keyID}`, resolveResourceRequestOptions$1A(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
+/**
+ * List user actions and configuration changes within this organization.
+ */
+class AuditLogs extends APIResource {
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$S(query, ['after', 'limit', 'order'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$S(query, [
+            'actor_emails',
+            'actor_ids',
+            'after',
+            'before',
+            'effective_at',
+            'event_types',
+            'limit',
+            'project_ids',
+            'resource_ids',
+            'tenant_only',
+        ], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/admin_api_keys', (CursorPage), resolveResourceRequestOptions$1A(options, (options) => ({
+        return this._client.getAPIList('/organization/audit_logs', (ConversationCursorPage), resolveResourceRequestOptions$1C(options, (options) => ({
             query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Delete an organization admin API key
-     *
-     * @example
-     * ```ts
-     * const adminAPIKey =
-     *   await client.admin.organization.adminAPIKeys.delete(
-     *     'key_id',
-     *   );
-     * ```
-     */
-    delete(keyID, options) {
-        return this._client.delete(path `/organization/admin_api_keys/${keyID}`, resolveResourceRequestOptions$1A(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
@@ -43523,7 +43684,7 @@ class AdminAPIKeys extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1z(options, buildOptions) {
+function resolveResourceRequestOptions$1B(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -43578,38 +43739,181 @@ function normalizeRequestOptionsForQuery$R(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-/**
- * List user actions and configuration changes within this organization.
- */
-class AuditLogs extends APIResource {
-    list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$R(query, [
-            'actor_emails',
-            'actor_ids',
-            'after',
-            'before',
-            'effective_at',
-            'event_types',
-            'limit',
-            'project_ids',
-            'resource_ids',
-            'tenant_only',
-        ], options);
+let Certificates$1 = class Certificates extends APIResource {
+    /**
+     * Upload a certificate to the organization. This does **not** automatically
+     * activate the certificate.
+     *
+     * Organizations can upload up to 50 certificates.
+     *
+     * @example
+     * ```ts
+     * const certificate =
+     *   await client.admin.organization.certificates.create({
+     *     certificate: 'certificate',
+     *   });
+     * ```
+     */
+    create(body, options) {
+        return this._client.post('/organization/certificates', resolveResourceRequestOptions$1B(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    retrieve(certificateID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$R(query, ['include'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/audit_logs', (ConversationCursorPage), resolveResourceRequestOptions$1z(options, (options) => ({
+        return this._client.get(path `/organization/certificates/${certificateID}`, resolveResourceRequestOptions$1B(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-}
+    /**
+     * Modify a certificate. Note that only the name can be modified.
+     *
+     * @example
+     * ```ts
+     * const certificate =
+     *   await client.admin.organization.certificates.update(
+     *     'certificate_id',
+     *   );
+     * ```
+     */
+    update(certificateID, body, options) {
+        return this._client.post(path `/organization/certificates/${certificateID}`, resolveResourceRequestOptions$1B(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$R(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/certificates', (ConversationCursorPage), resolveResourceRequestOptions$1B(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Delete a certificate from the organization.
+     *
+     * The certificate must be inactive for the organization and all projects.
+     *
+     * @example
+     * ```ts
+     * const certificate =
+     *   await client.admin.organization.certificates.delete(
+     *     'certificate_id',
+     *   );
+     * ```
+     */
+    delete(certificateID, options) {
+        return this._client.delete(path `/organization/certificates/${certificateID}`, resolveResourceRequestOptions$1B(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Activate certificates at the organization level.
+     *
+     * You can atomically and idempotently activate up to 10 certificates at a time.
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const certificateActivateResponse of client.admin.organization.certificates.activate(
+     *   { certificate_ids: ['cert_abc'] },
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    activate(body, options) {
+        return this._client.getAPIList('/organization/certificates/activate', (Page), resolveResourceRequestOptions$1B(options, (options) => ({
+            body,
+            method: 'post',
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Deactivate certificates at the organization level.
+     *
+     * You can atomically and idempotently deactivate up to 10 certificates at a time.
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const certificateDeactivateResponse of client.admin.organization.certificates.deactivate(
+     *   { certificate_ids: ['cert_abc'] },
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    deactivate(body, options) {
+        return this._client.getAPIList('/organization/certificates/deactivate', (Page), resolveResourceRequestOptions$1B(options, (options) => ({
+            body,
+            method: 'post',
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+};
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1y(options, buildOptions) {
+function resolveResourceRequestOptions$1A(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+let DataRetention$1 = class DataRetention extends APIResource {
+    /**
+     * Retrieves organization data retention controls.
+     *
+     * @example
+     * ```ts
+     * const organizationDataRetention =
+     *   await client.admin.organization.dataRetention.retrieve();
+     * ```
+     */
+    retrieve(options) {
+        return this._client.get('/organization/data_retention', resolveResourceRequestOptions$1A(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Updates organization data retention controls.
+     *
+     * @example
+     * ```ts
+     * const organizationDataRetention =
+     *   await client.admin.organization.dataRetention.update({
+     *     retention_type: 'zero_data_retention',
+     *   });
+     * ```
+     */
+    update(body, options) {
+        return this._client.post('/organization/data_retention', resolveResourceRequestOptions$1A(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+};
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1z(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -43664,181 +43968,101 @@ function normalizeRequestOptionsForQuery$Q(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Certificates$1 = class Certificates extends APIResource {
+class ExternalStorage extends APIResource {
     /**
-     * Upload a certificate to the organization. This does **not** automatically
-     * activate the certificate.
-     *
-     * Organizations can upload up to 50 certificates.
+     * Register one customer-managed external storage configuration.
      *
      * @example
      * ```ts
-     * const certificate =
-     *   await client.admin.organization.certificates.create({
-     *     certificate: 'certificate',
+     * const externalStorageConfiguration =
+     *   await client.admin.organization.externalStorage.create({
+     *     project_id: 'proj_123',
+     *     provider: {
+     *       bucket: 'bucket',
+     *       role_arn: 'role_arn',
+     *       type: 'aws',
+     *     },
      *   });
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/certificates', resolveResourceRequestOptions$1y(options, (options) => ({
+        return this._client.post('/organization/external_storage', resolveResourceRequestOptions$1z(options, (options) => ({
             body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    retrieve(certificateID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$Q(query, ['include'], options);
-        if (normalizeRequestOptionsForQueryOptions !== undefined) {
-            options = normalizeRequestOptionsForQueryOptions;
-            query = {};
-        }
-        query = query;
-        return this._client.get(path `/organization/certificates/${certificateID}`, resolveResourceRequestOptions$1y(options, (options) => ({
-            query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Modify a certificate. Note that only the name can be modified.
+     * Get one customer-managed external storage configuration.
      *
      * @example
      * ```ts
-     * const certificate =
-     *   await client.admin.organization.certificates.update(
-     *     'certificate_id',
+     * const externalStorageConfiguration =
+     *   await client.admin.organization.externalStorage.retrieve(
+     *     'extstorage_123',
      *   );
      * ```
      */
-    update(certificateID, body, options) {
-        return this._client.post(path `/organization/certificates/${certificateID}`, resolveResourceRequestOptions$1y(options, (options) => ({
-            body,
+    retrieve(externalStorageID, options) {
+        return this._client.get(path `/organization/external_storage/${externalStorageID}`, resolveResourceRequestOptions$1z(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$Q(query, ['after', 'limit', 'order'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$Q(query, ['after', 'limit', 'order', 'project_id'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/certificates', (ConversationCursorPage), resolveResourceRequestOptions$1y(options, (options) => ({
+        return this._client.getAPIList('/organization/external_storage', (CursorPage), resolveResourceRequestOptions$1z(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Delete a certificate from the organization.
-     *
-     * The certificate must be inactive for the organization and all projects.
+     * Disconnect a customer-managed external storage configuration. Removing the
+     * project's last configuration restores organization-default retention if
+     * customer-managed retention was active. Repeating a deletion also completes any
+     * interrupted retention update. Cloud storage is unchanged.
      *
      * @example
      * ```ts
-     * const certificate =
-     *   await client.admin.organization.certificates.delete(
-     *     'certificate_id',
+     * const externalStorageDeleted =
+     *   await client.admin.organization.externalStorage.delete(
+     *     'extstorage_123',
      *   );
      * ```
      */
-    delete(certificateID, options) {
-        return this._client.delete(path `/organization/certificates/${certificateID}`, resolveResourceRequestOptions$1y(options, (options) => ({
+    delete(externalStorageID, options) {
+        return this._client.delete(path `/organization/external_storage/${externalStorageID}`, resolveResourceRequestOptions$1z(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Activate certificates at the organization level.
-     *
-     * You can atomically and idempotently activate up to 10 certificates at a time.
+     * Validate one customer-managed external storage configuration.
      *
      * @example
      * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const certificateActivateResponse of client.admin.organization.certificates.activate(
-     *   { certificate_ids: ['cert_abc'] },
-     * )) {
-     *   // ...
-     * }
+     * const externalStorageConfiguration =
+     *   await client.admin.organization.externalStorage.validate(
+     *     'extstorage_123',
+     *   );
      * ```
      */
-    activate(body, options) {
-        return this._client.getAPIList('/organization/certificates/activate', (Page), resolveResourceRequestOptions$1y(options, (options) => ({
-            body,
-            method: 'post',
+    validate(externalStorageID, options) {
+        return this._client.post(path `/organization/external_storage/${externalStorageID}/validate`, resolveResourceRequestOptions$1z(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-    /**
-     * Deactivate certificates at the organization level.
-     *
-     * You can atomically and idempotently deactivate up to 10 certificates at a time.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const certificateDeactivateResponse of client.admin.organization.certificates.deactivate(
-     *   { certificate_ids: ['cert_abc'] },
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    deactivate(body, options) {
-        return this._client.getAPIList('/organization/certificates/deactivate', (Page), resolveResourceRequestOptions$1y(options, (options) => ({
-            body,
-            method: 'post',
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-};
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1x(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
 }
-let DataRetention$1 = class DataRetention extends APIResource {
-    /**
-     * Retrieves organization data retention controls.
-     *
-     * @example
-     * ```ts
-     * const organizationDataRetention =
-     *   await client.admin.organization.dataRetention.retrieve();
-     * ```
-     */
-    retrieve(options) {
-        return this._client.get('/organization/data_retention', resolveResourceRequestOptions$1x(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Updates organization data retention controls.
-     *
-     * @example
-     * ```ts
-     * const organizationDataRetention =
-     *   await client.admin.organization.dataRetention.update({
-     *     retention_type: 'zero_data_retention',
-     *   });
-     * ```
-     */
-    update(body, options) {
-        return this._client.post('/organization/data_retention', resolveResourceRequestOptions$1x(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-};
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1w(options, buildOptions) {
+function resolveResourceRequestOptions$1y(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -43893,93 +44117,70 @@ function normalizeRequestOptionsForQuery$P(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class ExternalStorage extends APIResource {
+class Invites extends APIResource {
     /**
-     * Register one customer-managed external storage configuration.
+     * Create an invite for a user to the organization. The invite must be accepted by
+     * the user before they have access to the organization.
      *
      * @example
      * ```ts
-     * const externalStorageConfiguration =
-     *   await client.admin.organization.externalStorage.create({
-     *     project_id: 'proj_123',
-     *     provider: {
-     *       bucket: 'bucket',
-     *       role_arn: 'role_arn',
-     *       type: 'aws',
-     *     },
+     * const invite =
+     *   await client.admin.organization.invites.create({
+     *     email: 'email',
+     *     role: 'reader',
      *   });
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/external_storage', resolveResourceRequestOptions$1w(options, (options) => ({
+        return this._client.post('/organization/invites', resolveResourceRequestOptions$1y(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Get one customer-managed external storage configuration.
+     * Retrieves an invite.
      *
      * @example
      * ```ts
-     * const externalStorageConfiguration =
-     *   await client.admin.organization.externalStorage.retrieve(
-     *     'extstorage_123',
+     * const invite =
+     *   await client.admin.organization.invites.retrieve(
+     *     'invite_id',
      *   );
      * ```
      */
-    retrieve(externalStorageID, options) {
-        return this._client.get(path `/organization/external_storage/${externalStorageID}`, resolveResourceRequestOptions$1w(options, (options) => ({
+    retrieve(inviteID, options) {
+        return this._client.get(path `/organization/invites/${inviteID}`, resolveResourceRequestOptions$1y(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$P(query, ['after', 'limit', 'order', 'project_id'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$P(query, ['after', 'limit'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/external_storage', (CursorPage), resolveResourceRequestOptions$1w(options, (options) => ({
+        return this._client.getAPIList('/organization/invites', (ConversationCursorPage), resolveResourceRequestOptions$1y(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Disconnect a customer-managed external storage configuration. Removing the
-     * project's last configuration restores organization-default retention if
-     * customer-managed retention was active. Repeating a deletion also completes any
-     * interrupted retention update. Cloud storage is unchanged.
+     * Delete an invite. If the invite has already been accepted, it cannot be deleted.
      *
      * @example
      * ```ts
-     * const externalStorageDeleted =
-     *   await client.admin.organization.externalStorage.delete(
-     *     'extstorage_123',
+     * const invite =
+     *   await client.admin.organization.invites.delete(
+     *     'invite_id',
      *   );
      * ```
      */
-    delete(externalStorageID, options) {
-        return this._client.delete(path `/organization/external_storage/${externalStorageID}`, resolveResourceRequestOptions$1w(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Validate one customer-managed external storage configuration.
-     *
-     * @example
-     * ```ts
-     * const externalStorageConfiguration =
-     *   await client.admin.organization.externalStorage.validate(
-     *     'extstorage_123',
-     *   );
-     * ```
-     */
-    validate(externalStorageID, options) {
-        return this._client.post(path `/organization/external_storage/${externalStorageID}/validate`, resolveResourceRequestOptions$1w(options, (options) => ({
+    delete(inviteID, options) {
+        return this._client.delete(path `/organization/invites/${inviteID}`, resolveResourceRequestOptions$1y(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
@@ -43987,7 +44188,7 @@ class ExternalStorage extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1v(options, buildOptions) {
+function resolveResourceRequestOptions$1x(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -44042,78 +44243,91 @@ function normalizeRequestOptionsForQuery$O(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class Invites extends APIResource {
+let Roles$5 = class Roles extends APIResource {
     /**
-     * Create an invite for a user to the organization. The invite must be accepted by
-     * the user before they have access to the organization.
+     * Creates a custom role for the organization.
      *
      * @example
      * ```ts
-     * const invite =
-     *   await client.admin.organization.invites.create({
-     *     email: 'email',
-     *     role: 'reader',
-     *   });
+     * const role = await client.admin.organization.roles.create({
+     *   permissions: ['string'],
+     *   role_name: 'role_name',
+     * });
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/invites', resolveResourceRequestOptions$1v(options, (options) => ({
+        return this._client.post('/organization/roles', resolveResourceRequestOptions$1x(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves an invite.
+     * Retrieves an organization role.
      *
      * @example
      * ```ts
-     * const invite =
-     *   await client.admin.organization.invites.retrieve(
-     *     'invite_id',
-     *   );
+     * const role = await client.admin.organization.roles.retrieve(
+     *   'role_id',
+     * );
      * ```
      */
-    retrieve(inviteID, options) {
-        return this._client.get(path `/organization/invites/${inviteID}`, resolveResourceRequestOptions$1v(options, (options) => ({
+    retrieve(roleID, options) {
+        return this._client.get(path `/organization/roles/${roleID}`, resolveResourceRequestOptions$1x(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Updates an existing organization role.
+     *
+     * @example
+     * ```ts
+     * const role = await client.admin.organization.roles.update(
+     *   'role_id',
+     * );
+     * ```
+     */
+    update(roleID, body, options) {
+        return this._client.post(path `/organization/roles/${roleID}`, resolveResourceRequestOptions$1x(options, (options) => ({
+            body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$O(query, ['after', 'limit'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$O(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/invites', (ConversationCursorPage), resolveResourceRequestOptions$1v(options, (options) => ({
+        return this._client.getAPIList('/organization/roles', (NextCursorPage), resolveResourceRequestOptions$1x(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Delete an invite. If the invite has already been accepted, it cannot be deleted.
+     * Deletes a custom role from the organization.
      *
      * @example
      * ```ts
-     * const invite =
-     *   await client.admin.organization.invites.delete(
-     *     'invite_id',
-     *   );
+     * const role = await client.admin.organization.roles.delete(
+     *   'role_id',
+     * );
      * ```
      */
-    delete(inviteID, options) {
-        return this._client.delete(path `/organization/invites/${inviteID}`, resolveResourceRequestOptions$1v(options, (options) => ({
+    delete(roleID, options) {
+        return this._client.delete(path `/organization/roles/${roleID}`, resolveResourceRequestOptions$1x(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-}
+};
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1u(options, buildOptions) {
+function resolveResourceRequestOptions$1w(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -44168,88 +44382,387 @@ function normalizeRequestOptionsForQuery$N(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Roles$5 = class Roles extends APIResource {
+let SpendAlerts$1 = class SpendAlerts extends APIResource {
     /**
-     * Creates a custom role for the organization.
+     * Creates an organization spend alert.
      *
      * @example
      * ```ts
-     * const role = await client.admin.organization.roles.create({
-     *   permissions: ['string'],
-     *   role_name: 'role_name',
-     * });
+     * const organizationSpendAlert =
+     *   await client.admin.organization.spendAlerts.create({
+     *     currency: 'USD',
+     *     interval: 'month',
+     *     notification_channel: {
+     *       recipients: ['string'],
+     *       type: 'email',
+     *     },
+     *     threshold_amount: 0,
+     *   });
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/roles', resolveResourceRequestOptions$1u(options, (options) => ({
+        return this._client.post('/organization/spend_alerts', resolveResourceRequestOptions$1w(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves an organization role.
+     * Retrieves an organization spend alert.
      *
      * @example
      * ```ts
-     * const role = await client.admin.organization.roles.retrieve(
-     *   'role_id',
-     * );
+     * const organizationSpendAlert =
+     *   await client.admin.organization.spendAlerts.retrieve(
+     *     'alert_id',
+     *   );
      * ```
      */
-    retrieve(roleID, options) {
-        return this._client.get(path `/organization/roles/${roleID}`, resolveResourceRequestOptions$1u(options, (options) => ({
+    retrieve(alertID, options) {
+        return this._client.get(path `/organization/spend_alerts/${alertID}`, resolveResourceRequestOptions$1w(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Updates an existing organization role.
+     * Updates an organization spend alert.
      *
      * @example
      * ```ts
-     * const role = await client.admin.organization.roles.update(
-     *   'role_id',
-     * );
+     * const organizationSpendAlert =
+     *   await client.admin.organization.spendAlerts.update(
+     *     'alert_id',
+     *     {
+     *       currency: 'USD',
+     *       interval: 'month',
+     *       notification_channel: {
+     *         recipients: ['string'],
+     *         type: 'email',
+     *       },
+     *       threshold_amount: 0,
+     *     },
+     *   );
      * ```
      */
-    update(roleID, body, options) {
-        return this._client.post(path `/organization/roles/${roleID}`, resolveResourceRequestOptions$1u(options, (options) => ({
+    update(alertID, body, options) {
+        return this._client.post(path `/organization/spend_alerts/${alertID}`, resolveResourceRequestOptions$1w(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$N(query, ['after', 'limit', 'order'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$N(query, ['after', 'before', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/roles', (NextCursorPage), resolveResourceRequestOptions$1u(options, (options) => ({
+        return this._client.getAPIList('/organization/spend_alerts', (ConversationCursorPage), resolveResourceRequestOptions$1w(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Deletes a custom role from the organization.
+     * Deletes an organization spend alert.
      *
      * @example
      * ```ts
-     * const role = await client.admin.organization.roles.delete(
-     *   'role_id',
-     * );
+     * const organizationSpendAlertDeleted =
+     *   await client.admin.organization.spendAlerts.delete(
+     *     'alert_id',
+     *   );
      * ```
      */
-    delete(roleID, options) {
-        return this._client.delete(path `/organization/roles/${roleID}`, resolveResourceRequestOptions$1u(options, (options) => ({
+    delete(alertID, options) {
+        return this._client.delete(path `/organization/spend_alerts/${alertID}`, resolveResourceRequestOptions$1w(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
 };
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1v(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+let SpendLimit$1 = class SpendLimit extends APIResource {
+    /**
+     * Get the organization's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const organizationSpendLimit =
+     *   await client.admin.organization.spendLimit.retrieve();
+     * ```
+     */
+    retrieve(options) {
+        return this._client.get('/organization/spend_limit', resolveResourceRequestOptions$1v(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Create or replace the organization's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const organizationSpendLimit =
+     *   await client.admin.organization.spendLimit.update({
+     *     currency: 'USD',
+     *     interval: 'month',
+     *     threshold_amount: 1,
+     *   });
+     * ```
+     */
+    update(body, options) {
+        return this._client.post('/organization/spend_limit', resolveResourceRequestOptions$1v(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Delete the organization's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const organizationSpendLimitDeleted =
+     *   await client.admin.organization.spendLimit.delete();
+     * ```
+     */
+    delete(options) {
+        return this._client.delete('/organization/spend_limit', resolveResourceRequestOptions$1v(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+};
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1u(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class Usage extends APIResource {
+    /**
+     * Get audio speeches usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.audioSpeeches({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    audioSpeeches(query, options) {
+        return this._client.get('/organization/usage/audio_speeches', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get audio transcriptions usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.audioTranscriptions(
+     *     { start_time: 0 },
+     *   );
+     * ```
+     */
+    audioTranscriptions(query, options) {
+        return this._client.get('/organization/usage/audio_transcriptions', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get code interpreter sessions usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.codeInterpreterSessions(
+     *     { start_time: 0 },
+     *   );
+     * ```
+     */
+    codeInterpreterSessions(query, options) {
+        return this._client.get('/organization/usage/code_interpreter_sessions', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get completions usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.completions({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    completions(query, options) {
+        return this._client.get('/organization/usage/completions', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get costs details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.costs({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    costs(query, options) {
+        return this._client.get('/organization/costs', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get Decisions API usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.decisions({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    decisions(query, options) {
+        return this._client.get('/organization/usage/decisions', resolveResourceRequestOptions$1u(options, (options) => ({
+            // Null optional filters mean unset; empty query values fail backend parsing.
+            query: Object.fromEntries(Object.entries(query).filter(([, value]) => value !== null)),
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get embeddings usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.embeddings({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    embeddings(query, options) {
+        return this._client.get('/organization/usage/embeddings', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get file search calls usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.fileSearchCalls({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    fileSearchCalls(query, options) {
+        return this._client.get('/organization/usage/file_search_calls', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get images usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.images({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    images(query, options) {
+        return this._client.get('/organization/usage/images', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get moderations usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.moderations({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    moderations(query, options) {
+        return this._client.get('/organization/usage/moderations', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get vector stores usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.vectorStores({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    vectorStores(query, options) {
+        return this._client.get('/organization/usage/vector_stores', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get web search calls usage details for the organization.
+     *
+     * @example
+     * ```ts
+     * const response =
+     *   await client.admin.organization.usage.webSearchCalls({
+     *     start_time: 0,
+     *   });
+     * ```
+     */
+    webSearchCalls(query, options) {
+        return this._client.get('/organization/usage/web_search_calls', resolveResourceRequestOptions$1u(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+}
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$1t(options, buildOptions) {
@@ -44307,101 +44820,73 @@ function normalizeRequestOptionsForQuery$M(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let SpendAlerts$1 = class SpendAlerts extends APIResource {
+let Roles$4 = class Roles extends APIResource {
     /**
-     * Creates an organization spend alert.
+     * Assigns an organization role to a group within the organization.
      *
      * @example
      * ```ts
-     * const organizationSpendAlert =
-     *   await client.admin.organization.spendAlerts.create({
-     *     currency: 'USD',
-     *     interval: 'month',
-     *     notification_channel: {
-     *       recipients: ['string'],
-     *       type: 'email',
-     *     },
-     *     threshold_amount: 0,
-     *   });
+     * const role =
+     *   await client.admin.organization.groups.roles.create(
+     *     'group_id',
+     *     { role_id: 'role_id' },
+     *   );
      * ```
      */
-    create(body, options) {
-        return this._client.post('/organization/spend_alerts', resolveResourceRequestOptions$1t(options, (options) => ({
+    create(groupID, body, options) {
+        return this._client.post(path `/organization/groups/${groupID}/roles`, resolveResourceRequestOptions$1t(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves an organization spend alert.
+     * Retrieves an organization role assigned to a group.
      *
      * @example
      * ```ts
-     * const organizationSpendAlert =
-     *   await client.admin.organization.spendAlerts.retrieve(
-     *     'alert_id',
+     * const role =
+     *   await client.admin.organization.groups.roles.retrieve(
+     *     'role_id',
+     *     { group_id: 'group_id' },
      *   );
      * ```
      */
-    retrieve(alertID, options) {
-        return this._client.get(path `/organization/spend_alerts/${alertID}`, resolveResourceRequestOptions$1t(options, (options) => ({
+    retrieve(roleID, params, options) {
+        const { group_id } = params;
+        return this._client.get(path `/organization/groups/${group_id}/roles/${roleID}`, resolveResourceRequestOptions$1t(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-    /**
-     * Updates an organization spend alert.
-     *
-     * @example
-     * ```ts
-     * const organizationSpendAlert =
-     *   await client.admin.organization.spendAlerts.update(
-     *     'alert_id',
-     *     {
-     *       currency: 'USD',
-     *       interval: 'month',
-     *       notification_channel: {
-     *         recipients: ['string'],
-     *         type: 'email',
-     *       },
-     *       threshold_amount: 0,
-     *     },
-     *   );
-     * ```
-     */
-    update(alertID, body, options) {
-        return this._client.post(path `/organization/spend_alerts/${alertID}`, resolveResourceRequestOptions$1t(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$M(query, ['after', 'before', 'limit', 'order'], options);
+    list(groupID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$M(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/spend_alerts', (ConversationCursorPage), resolveResourceRequestOptions$1t(options, (options) => ({
+        return this._client.getAPIList(path `/organization/groups/${groupID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1t(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Deletes an organization spend alert.
+     * Unassigns an organization role from a group within the organization.
      *
      * @example
      * ```ts
-     * const organizationSpendAlertDeleted =
-     *   await client.admin.organization.spendAlerts.delete(
-     *     'alert_id',
+     * const role =
+     *   await client.admin.organization.groups.roles.delete(
+     *     'role_id',
+     *     { group_id: 'group_id' },
      *   );
      * ```
      */
-    delete(alertID, options) {
-        return this._client.delete(path `/organization/spend_alerts/${alertID}`, resolveResourceRequestOptions$1t(options, (options) => ({
+    delete(roleID, params, options) {
+        const { group_id } = params;
+        return this._client.delete(path `/organization/groups/${group_id}/roles/${roleID}`, resolveResourceRequestOptions$1t(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
@@ -44410,268 +44895,6 @@ let SpendAlerts$1 = class SpendAlerts extends APIResource {
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$1s(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-let SpendLimit$1 = class SpendLimit extends APIResource {
-    /**
-     * Get the organization's hard spend limit.
-     *
-     * @example
-     * ```ts
-     * const organizationSpendLimit =
-     *   await client.admin.organization.spendLimit.retrieve();
-     * ```
-     */
-    retrieve(options) {
-        return this._client.get('/organization/spend_limit', resolveResourceRequestOptions$1s(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Create or replace the organization's hard spend limit.
-     *
-     * @example
-     * ```ts
-     * const organizationSpendLimit =
-     *   await client.admin.organization.spendLimit.update({
-     *     currency: 'USD',
-     *     interval: 'month',
-     *     threshold_amount: 1,
-     *   });
-     * ```
-     */
-    update(body, options) {
-        return this._client.post('/organization/spend_limit', resolveResourceRequestOptions$1s(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Delete the organization's hard spend limit.
-     *
-     * @example
-     * ```ts
-     * const organizationSpendLimitDeleted =
-     *   await client.admin.organization.spendLimit.delete();
-     * ```
-     */
-    delete(options) {
-        return this._client.delete('/organization/spend_limit', resolveResourceRequestOptions$1s(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-};
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1r(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-class Usage extends APIResource {
-    /**
-     * Get audio speeches usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.audioSpeeches({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    audioSpeeches(query, options) {
-        return this._client.get('/organization/usage/audio_speeches', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get audio transcriptions usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.audioTranscriptions(
-     *     { start_time: 0 },
-     *   );
-     * ```
-     */
-    audioTranscriptions(query, options) {
-        return this._client.get('/organization/usage/audio_transcriptions', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get code interpreter sessions usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.codeInterpreterSessions(
-     *     { start_time: 0 },
-     *   );
-     * ```
-     */
-    codeInterpreterSessions(query, options) {
-        return this._client.get('/organization/usage/code_interpreter_sessions', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get completions usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.completions({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    completions(query, options) {
-        return this._client.get('/organization/usage/completions', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get costs details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.costs({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    costs(query, options) {
-        return this._client.get('/organization/costs', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get embeddings usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.embeddings({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    embeddings(query, options) {
-        return this._client.get('/organization/usage/embeddings', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get file search calls usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.fileSearchCalls({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    fileSearchCalls(query, options) {
-        return this._client.get('/organization/usage/file_search_calls', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get images usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.images({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    images(query, options) {
-        return this._client.get('/organization/usage/images', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get moderations usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.moderations({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    moderations(query, options) {
-        return this._client.get('/organization/usage/moderations', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get vector stores usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.vectorStores({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    vectorStores(query, options) {
-        return this._client.get('/organization/usage/vector_stores', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Get web search calls usage details for the organization.
-     *
-     * @example
-     * ```ts
-     * const response =
-     *   await client.admin.organization.usage.webSearchCalls({
-     *     start_time: 0,
-     *   });
-     * ```
-     */
-    webSearchCalls(query, options) {
-        return this._client.get('/organization/usage/web_search_calls', resolveResourceRequestOptions$1r(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-}
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1q(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -44726,41 +44949,41 @@ function normalizeRequestOptionsForQuery$L(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Roles$4 = class Roles extends APIResource {
+let Users$2 = class Users extends APIResource {
     /**
-     * Assigns an organization role to a group within the organization.
+     * Adds a user to a group.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.groups.roles.create(
+     * const user =
+     *   await client.admin.organization.groups.users.create(
      *     'group_id',
-     *     { role_id: 'role_id' },
+     *     { user_id: 'user_id' },
      *   );
      * ```
      */
     create(groupID, body, options) {
-        return this._client.post(path `/organization/groups/${groupID}/roles`, resolveResourceRequestOptions$1q(options, (options) => ({
+        return this._client.post(path `/organization/groups/${groupID}/users`, resolveResourceRequestOptions$1s(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves an organization role assigned to a group.
+     * Retrieves a user in a group.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.groups.roles.retrieve(
-     *     'role_id',
+     * const user =
+     *   await client.admin.organization.groups.users.retrieve(
+     *     'user_id',
      *     { group_id: 'group_id' },
      *   );
      * ```
      */
-    retrieve(roleID, params, options) {
+    retrieve(userID, params, options) {
         const { group_id } = params;
-        return this._client.get(path `/organization/groups/${group_id}/roles/${roleID}`, resolveResourceRequestOptions$1q(options, (options) => ({
+        return this._client.get(path `/organization/groups/${group_id}/users/${userID}`, resolveResourceRequestOptions$1s(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
@@ -44772,27 +44995,27 @@ let Roles$4 = class Roles extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/groups/${groupID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1q(options, (options) => ({
+        return this._client.getAPIList(path `/organization/groups/${groupID}/users`, (NextCursorPage), resolveResourceRequestOptions$1s(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Unassigns an organization role from a group within the organization.
+     * Removes a user from a group.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.groups.roles.delete(
-     *     'role_id',
+     * const user =
+     *   await client.admin.organization.groups.users.delete(
+     *     'user_id',
      *     { group_id: 'group_id' },
      *   );
      * ```
      */
-    delete(roleID, params, options) {
+    delete(userID, params, options) {
         const { group_id } = params;
-        return this._client.delete(path `/organization/groups/${group_id}/roles/${roleID}`, resolveResourceRequestOptions$1q(options, (options) => ({
+        return this._client.delete(path `/organization/groups/${group_id}/users/${userID}`, resolveResourceRequestOptions$1s(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
@@ -44800,7 +45023,7 @@ let Roles$4 = class Roles extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1p(options, buildOptions) {
+function resolveResourceRequestOptions$1r(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -44855,81 +45078,99 @@ function normalizeRequestOptionsForQuery$K(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Users$2 = class Users extends APIResource {
+let Groups$1 = class Groups extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.users = new Users$2(this._client);
+        this.roles = new Roles$4(this._client);
+    }
     /**
-     * Adds a user to a group.
+     * Creates a new group in the organization.
      *
      * @example
      * ```ts
-     * const user =
-     *   await client.admin.organization.groups.users.create(
-     *     'group_id',
-     *     { user_id: 'user_id' },
-     *   );
+     * const group = await client.admin.organization.groups.create(
+     *   { name: 'x' },
+     * );
      * ```
      */
-    create(groupID, body, options) {
-        return this._client.post(path `/organization/groups/${groupID}/users`, resolveResourceRequestOptions$1p(options, (options) => ({
+    create(body, options) {
+        return this._client.post('/organization/groups', resolveResourceRequestOptions$1r(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves a user in a group.
+     * Retrieves a group.
      *
      * @example
      * ```ts
-     * const user =
-     *   await client.admin.organization.groups.users.retrieve(
-     *     'user_id',
-     *     { group_id: 'group_id' },
+     * const group =
+     *   await client.admin.organization.groups.retrieve(
+     *     'group_id',
      *   );
      * ```
      */
-    retrieve(userID, params, options) {
-        const { group_id } = params;
-        return this._client.get(path `/organization/groups/${group_id}/users/${userID}`, resolveResourceRequestOptions$1p(options, (options) => ({
+    retrieve(groupID, options) {
+        return this._client.get(path `/organization/groups/${groupID}`, resolveResourceRequestOptions$1r(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-    list(groupID, query = {}, options) {
+    /**
+     * Updates a group's information.
+     *
+     * @example
+     * ```ts
+     * const group = await client.admin.organization.groups.update(
+     *   'group_id',
+     *   { name: 'x' },
+     * );
+     * ```
+     */
+    update(groupID, body, options) {
+        return this._client.post(path `/organization/groups/${groupID}`, resolveResourceRequestOptions$1r(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    list(query = {}, options) {
         const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$K(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/groups/${groupID}/users`, (NextCursorPage), resolveResourceRequestOptions$1p(options, (options) => ({
+        return this._client.getAPIList('/organization/groups', (NextCursorPage), resolveResourceRequestOptions$1r(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Removes a user from a group.
+     * Deletes a group from the organization.
      *
      * @example
      * ```ts
-     * const user =
-     *   await client.admin.organization.groups.users.delete(
-     *     'user_id',
-     *     { group_id: 'group_id' },
-     *   );
+     * const group = await client.admin.organization.groups.delete(
+     *   'group_id',
+     * );
      * ```
      */
-    delete(userID, params, options) {
-        const { group_id } = params;
-        return this._client.delete(path `/organization/groups/${group_id}/users/${userID}`, resolveResourceRequestOptions$1p(options, (options) => ({
+    delete(groupID, options) {
+        return this._client.delete(path `/organization/groups/${groupID}`, resolveResourceRequestOptions$1r(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
 };
+Groups$1.Users = Users$2;
+Groups$1.Roles = Roles$4;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1o(options, buildOptions) {
+function resolveResourceRequestOptions$1q(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -44984,99 +45225,106 @@ function normalizeRequestOptionsForQuery$J(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Groups$1 = class Groups extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.users = new Users$2(this._client);
-        this.roles = new Roles$4(this._client);
-    }
+let APIKeys$1 = class APIKeys extends APIResource {
     /**
-     * Creates a new group in the organization.
+     * Retrieves an API key in the project.
      *
      * @example
      * ```ts
-     * const group = await client.admin.organization.groups.create(
-     *   { name: 'x' },
-     * );
-     * ```
-     */
-    create(body, options) {
-        return this._client.post('/organization/groups', resolveResourceRequestOptions$1o(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Retrieves a group.
-     *
-     * @example
-     * ```ts
-     * const group =
-     *   await client.admin.organization.groups.retrieve(
-     *     'group_id',
+     * const projectAPIKey =
+     *   await client.admin.organization.projects.apiKeys.retrieve(
+     *     'api_key_id',
+     *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    retrieve(groupID, options) {
-        return this._client.get(path `/organization/groups/${groupID}`, resolveResourceRequestOptions$1o(options, (options) => ({
+    retrieve(apiKeyID, params, options) {
+        const { project_id } = params;
+        return this._client.get(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, resolveResourceRequestOptions$1q(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Updates a group's information.
+     * Updates the scopes and/or expiration of an existing API key in the project,
+     * including a service-account-owned key. Requires permission to write project API
+     * keys.
+     *
+     * Provide at least one of `scopes` or `expires_in_seconds`. Omitted fields stay
+     * unchanged; neither field accepts `null`. Both changes are saved together.
+     *
+     * `scopes` replaces the key's scope restrictions using the same scope identifiers
+     * as the dashboard. An empty array means All permissions, subject to the owner's
+     * effective access; it does not mean no access. Use `["api.all.read"]` for
+     * read-only access or specific scopes such as `["api.files.read"]` for restricted
+     * access. This does not change user or service-account roles or grant admin
+     * permissions. Scope changes follow the same authentication-cache propagation as
+     * dashboard edits.
+     *
+     * Provide `expires_in_seconds` to set the expiration relative to this request. The
+     * value must satisfy the organization's and project's expiry policies. Expired
+     * keys cannot be updated. Retrying resets the expiration relative to the new
+     * request. The response contains only the redacted key, not its secret.
      *
      * @example
      * ```ts
-     * const group = await client.admin.organization.groups.update(
-     *   'group_id',
-     *   { name: 'x' },
-     * );
+     * const projectAPIKey =
+     *   await client.admin.organization.projects.apiKeys.update(
+     *     'api_key_id',
+     *     {
+     *       project_id: 'project_id',
+     *       scopes: ['api.all.read'],
+     *     },
+     *   );
      * ```
      */
-    update(groupID, body, options) {
-        return this._client.post(path `/organization/groups/${groupID}`, resolveResourceRequestOptions$1o(options, (options) => ({
+    update(apiKeyID, params, options) {
+        const { project_id, ...body } = params;
+        return this._client.post(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, resolveResourceRequestOptions$1q(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-    list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$J(query, ['after', 'limit', 'order'], options);
+    list(projectID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$J(query, ['after', 'limit', 'owner_project_access'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/groups', (NextCursorPage), resolveResourceRequestOptions$1o(options, (options) => ({
+        return this._client.getAPIList(path `/organization/projects/${projectID}/api_keys`, (ConversationCursorPage), resolveResourceRequestOptions$1q(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Deletes a group from the organization.
+     * Deletes an API key from the project.
+     *
+     * Returns confirmation of the key deletion, or an error if the key belonged to a
+     * service account.
      *
      * @example
      * ```ts
-     * const group = await client.admin.organization.groups.delete(
-     *   'group_id',
-     * );
+     * const apiKey =
+     *   await client.admin.organization.projects.apiKeys.delete(
+     *     'api_key_id',
+     *     { project_id: 'project_id' },
+     *   );
      * ```
      */
-    delete(groupID, options) {
-        return this._client.delete(path `/organization/groups/${groupID}`, resolveResourceRequestOptions$1o(options, (options) => ({
+    delete(apiKeyID, params, options) {
+        const { project_id } = params;
+        return this._client.delete(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, resolveResourceRequestOptions$1q(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
 };
-Groups$1.Users = Users$2;
-Groups$1.Roles = Roles$4;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1n(options, buildOptions) {
+function resolveResourceRequestOptions$1p(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -45131,65 +45379,216 @@ function normalizeRequestOptionsForQuery$I(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let APIKeys$1 = class APIKeys extends APIResource {
-    /**
-     * Retrieves an API key in the project.
-     *
-     * @example
-     * ```ts
-     * const projectAPIKey =
-     *   await client.admin.organization.projects.apiKeys.retrieve(
-     *     'api_key_id',
-     *     { project_id: 'project_id' },
-     *   );
-     * ```
-     */
-    retrieve(apiKeyID, params, options) {
-        const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, resolveResourceRequestOptions$1n(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
+class Certificates extends APIResource {
     list(projectID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$I(query, ['after', 'limit', 'owner_project_access'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$I(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/projects/${projectID}/api_keys`, (ConversationCursorPage), resolveResourceRequestOptions$1n(options, (options) => ({
+        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates`, (ConversationCursorPage), resolveResourceRequestOptions$1p(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Deletes an API key from the project.
+     * Activate certificates at the project level.
      *
-     * Returns confirmation of the key deletion, or an error if the key belonged to a
-     * service account.
+     * You can atomically and idempotently activate up to 10 certificates at a time.
      *
      * @example
      * ```ts
-     * const apiKey =
-     *   await client.admin.organization.projects.apiKeys.delete(
-     *     'api_key_id',
-     *     { project_id: 'project_id' },
-     *   );
+     * // Automatically fetches more pages as needed.
+     * for await (const certificateActivateResponse of client.admin.organization.projects.certificates.activate(
+     *   'project_id',
+     *   { certificate_ids: ['cert_abc'] },
+     * )) {
+     *   // ...
+     * }
      * ```
      */
-    delete(apiKeyID, params, options) {
-        const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, resolveResourceRequestOptions$1n(options, (options) => ({
+    activate(projectID, body, options) {
+        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates/activate`, (Page), resolveResourceRequestOptions$1p(options, (options) => ({
+            body,
+            method: 'post',
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-};
+    /**
+     * Deactivate certificates at the project level. You can atomically and
+     * idempotently deactivate up to 10 certificates at a time.
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const certificateDeactivateResponse of client.admin.organization.projects.certificates.deactivate(
+     *   'project_id',
+     *   { certificate_ids: ['cert_abc'] },
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    deactivate(projectID, body, options) {
+        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates/deactivate`, (Page), resolveResourceRequestOptions$1p(options, (options) => ({
+            body,
+            method: 'post',
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+}
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1o(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class DataRetention extends APIResource {
+    /**
+     * Retrieves project data retention controls.
+     *
+     * @example
+     * ```ts
+     * const projectDataRetention =
+     *   await client.admin.organization.projects.dataRetention.retrieve(
+     *     'project_id',
+     *   );
+     * ```
+     */
+    retrieve(projectID, options) {
+        return this._client.get(path `/organization/projects/${projectID}/data_retention`, resolveResourceRequestOptions$1o(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Updates project data retention controls.
+     *
+     * @example
+     * ```ts
+     * const projectDataRetention =
+     *   await client.admin.organization.projects.dataRetention.update(
+     *     'project_id',
+     *     { retention_type: 'organization_default' },
+     *   );
+     * ```
+     */
+    update(projectID, body, options) {
+        return this._client.post(path `/organization/projects/${projectID}/data_retention`, resolveResourceRequestOptions$1o(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+}
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1n(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class HostedToolPermissions extends APIResource {
+    /**
+     * Returns hosted tool permissions for a project.
+     *
+     * @example
+     * ```ts
+     * const projectHostedToolPermissions =
+     *   await client.admin.organization.projects.hostedToolPermissions.retrieve(
+     *     'project_id',
+     *   );
+     * ```
+     */
+    retrieve(projectID, options) {
+        return this._client.get(path `/organization/projects/${projectID}/hosted_tool_permissions`, resolveResourceRequestOptions$1n(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Updates hosted tool permissions for a project.
+     *
+     * @example
+     * ```ts
+     * const projectHostedToolPermissions =
+     *   await client.admin.organization.projects.hostedToolPermissions.update(
+     *     'project_id',
+     *   );
+     * ```
+     */
+    update(projectID, body, options) {
+        return this._client.post(path `/organization/projects/${projectID}/hosted_tool_permissions`, resolveResourceRequestOptions$1n(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+}
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$1m(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class ModelPermissions extends APIResource {
+    /**
+     * Returns model permissions for a project.
+     *
+     * @example
+     * ```ts
+     * const projectModelPermissions =
+     *   await client.admin.organization.projects.modelPermissions.retrieve(
+     *     'project_id',
+     *   );
+     * ```
+     */
+    retrieve(projectID, options) {
+        return this._client.get(path `/organization/projects/${projectID}/model_permissions`, resolveResourceRequestOptions$1m(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Updates model permissions for a project.
+     *
+     * @example
+     * ```ts
+     * const projectModelPermissions =
+     *   await client.admin.organization.projects.modelPermissions.update(
+     *     'project_id',
+     *     { mode: 'allow_list', model_ids: ['string'] },
+     *   );
+     * ```
+     */
+    update(projectID, body, options) {
+        return this._client.post(path `/organization/projects/${projectID}/model_permissions`, resolveResourceRequestOptions$1m(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Deletes model permissions for a project.
+     *
+     * @example
+     * ```ts
+     * const projectModelPermissionsDeleted =
+     *   await client.admin.organization.projects.modelPermissions.delete(
+     *     'project_id',
+     *   );
+     * ```
+     */
+    delete(projectID, options) {
+        return this._client.delete(path `/organization/projects/${projectID}/model_permissions`, resolveResourceRequestOptions$1m(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+}
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1l(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -45244,105 +45643,35 @@ function normalizeRequestOptionsForQuery$H(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class Certificates extends APIResource {
-    list(projectID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$H(query, ['after', 'limit', 'order'], options);
+class RateLimits extends APIResource {
+    listRateLimits(projectID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$H(query, ['after', 'before', 'limit'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates`, (ConversationCursorPage), resolveResourceRequestOptions$1m(options, (options) => ({
+        return this._client.getAPIList(path `/organization/projects/${projectID}/rate_limits`, (ConversationCursorPage), resolveResourceRequestOptions$1l(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Activate certificates at the project level.
-     *
-     * You can atomically and idempotently activate up to 10 certificates at a time.
+     * Updates a project rate limit.
      *
      * @example
      * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const certificateActivateResponse of client.admin.organization.projects.certificates.activate(
-     *   'project_id',
-     *   { certificate_ids: ['cert_abc'] },
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    activate(projectID, body, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates/activate`, (Page), resolveResourceRequestOptions$1m(options, (options) => ({
-            body,
-            method: 'post',
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Deactivate certificates at the project level. You can atomically and
-     * idempotently deactivate up to 10 certificates at a time.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const certificateDeactivateResponse of client.admin.organization.projects.certificates.deactivate(
-     *   'project_id',
-     *   { certificate_ids: ['cert_abc'] },
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    deactivate(projectID, body, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates/deactivate`, (Page), resolveResourceRequestOptions$1m(options, (options) => ({
-            body,
-            method: 'post',
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-}
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1l(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-class DataRetention extends APIResource {
-    /**
-     * Retrieves project data retention controls.
-     *
-     * @example
-     * ```ts
-     * const projectDataRetention =
-     *   await client.admin.organization.projects.dataRetention.retrieve(
-     *     'project_id',
+     * const projectRateLimit =
+     *   await client.admin.organization.projects.rateLimits.updateRateLimit(
+     *     'rate_limit_id',
+     *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}/data_retention`, resolveResourceRequestOptions$1l(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Updates project data retention controls.
-     *
-     * @example
-     * ```ts
-     * const projectDataRetention =
-     *   await client.admin.organization.projects.dataRetention.update(
-     *     'project_id',
-     *     { retention_type: 'organization_default' },
-     *   );
-     * ```
-     */
-    update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/data_retention`, resolveResourceRequestOptions$1l(options, (options) => ({
+    updateRateLimit(rateLimitID, params, options) {
+        const { project_id, ...body } = params;
+        return this._client.post(path `/organization/projects/${project_id}/rate_limits/${rateLimitID}`, resolveResourceRequestOptions$1l(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
@@ -45352,108 +45681,6 @@ class DataRetention extends APIResource {
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$1k(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-class HostedToolPermissions extends APIResource {
-    /**
-     * Returns hosted tool permissions for a project.
-     *
-     * @example
-     * ```ts
-     * const projectHostedToolPermissions =
-     *   await client.admin.organization.projects.hostedToolPermissions.retrieve(
-     *     'project_id',
-     *   );
-     * ```
-     */
-    retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}/hosted_tool_permissions`, resolveResourceRequestOptions$1k(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Updates hosted tool permissions for a project.
-     *
-     * @example
-     * ```ts
-     * const projectHostedToolPermissions =
-     *   await client.admin.organization.projects.hostedToolPermissions.update(
-     *     'project_id',
-     *   );
-     * ```
-     */
-    update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/hosted_tool_permissions`, resolveResourceRequestOptions$1k(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-}
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1j(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-class ModelPermissions extends APIResource {
-    /**
-     * Returns model permissions for a project.
-     *
-     * @example
-     * ```ts
-     * const projectModelPermissions =
-     *   await client.admin.organization.projects.modelPermissions.retrieve(
-     *     'project_id',
-     *   );
-     * ```
-     */
-    retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}/model_permissions`, resolveResourceRequestOptions$1j(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Updates model permissions for a project.
-     *
-     * @example
-     * ```ts
-     * const projectModelPermissions =
-     *   await client.admin.organization.projects.modelPermissions.update(
-     *     'project_id',
-     *     { mode: 'allow_list', model_ids: ['string'] },
-     *   );
-     * ```
-     */
-    update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/model_permissions`, resolveResourceRequestOptions$1j(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Deletes model permissions for a project.
-     *
-     * @example
-     * ```ts
-     * const projectModelPermissionsDeleted =
-     *   await client.admin.organization.projects.modelPermissions.delete(
-     *     'project_id',
-     *   );
-     * ```
-     */
-    delete(projectID, options) {
-        return this._client.delete(path `/organization/projects/${projectID}/model_permissions`, resolveResourceRequestOptions$1j(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-}
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1i(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -45508,44 +45735,101 @@ function normalizeRequestOptionsForQuery$G(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class RateLimits extends APIResource {
-    listRateLimits(projectID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$G(query, ['after', 'before', 'limit'], options);
+let Roles$3 = class Roles extends APIResource {
+    /**
+     * Creates a custom role for a project.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.roles.create(
+     *     'project_id',
+     *     { permissions: ['string'], role_name: 'role_name' },
+     *   );
+     * ```
+     */
+    create(projectID, body, options) {
+        return this._client.post(path `/projects/${projectID}/roles`, resolveResourceRequestOptions$1k(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Retrieves a project role.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.roles.retrieve(
+     *     'role_id',
+     *     { project_id: 'project_id' },
+     *   );
+     * ```
+     */
+    retrieve(roleID, params, options) {
+        const { project_id } = params;
+        return this._client.get(path `/projects/${project_id}/roles/${roleID}`, resolveResourceRequestOptions$1k(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Updates an existing project role.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.roles.update(
+     *     'role_id',
+     *     { project_id: 'project_id' },
+     *   );
+     * ```
+     */
+    update(roleID, params, options) {
+        const { project_id, ...body } = params;
+        return this._client.post(path `/projects/${project_id}/roles/${roleID}`, resolveResourceRequestOptions$1k(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    list(projectID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$G(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/projects/${projectID}/rate_limits`, (ConversationCursorPage), resolveResourceRequestOptions$1i(options, (options) => ({
+        return this._client.getAPIList(path `/projects/${projectID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1k(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Updates a project rate limit.
+     * Deletes a custom role from a project.
      *
      * @example
      * ```ts
-     * const projectRateLimit =
-     *   await client.admin.organization.projects.rateLimits.updateRateLimit(
-     *     'rate_limit_id',
+     * const role =
+     *   await client.admin.organization.projects.roles.delete(
+     *     'role_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    updateRateLimit(rateLimitID, params, options) {
-        const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/rate_limits/${rateLimitID}`, resolveResourceRequestOptions$1i(options, (options) => ({
-            body,
+    delete(roleID, params, options) {
+        const { project_id } = params;
+        return this._client.delete(path `/projects/${project_id}/roles/${roleID}`, resolveResourceRequestOptions$1k(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-}
+};
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1h(options, buildOptions) {
+function resolveResourceRequestOptions$1j(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -45600,93 +45884,261 @@ function normalizeRequestOptionsForQuery$F(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Roles$3 = class Roles extends APIResource {
+class SpendAlerts extends APIResource {
     /**
-     * Creates a custom role for a project.
+     * Creates a project spend alert.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.projects.roles.create(
+     * const projectSpendAlert =
+     *   await client.admin.organization.projects.spendAlerts.create(
      *     'project_id',
-     *     { permissions: ['string'], role_name: 'role_name' },
+     *     {
+     *       currency: 'USD',
+     *       interval: 'month',
+     *       notification_channel: {
+     *         recipients: ['string'],
+     *         type: 'email',
+     *       },
+     *       threshold_amount: 0,
+     *     },
      *   );
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/projects/${projectID}/roles`, resolveResourceRequestOptions$1h(options, (options) => ({
+        return this._client.post(path `/organization/projects/${projectID}/spend_alerts`, resolveResourceRequestOptions$1j(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves a project role.
+     * Retrieves a project spend alert.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.projects.roles.retrieve(
-     *     'role_id',
+     * const projectSpendAlert =
+     *   await client.admin.organization.projects.spendAlerts.retrieve(
+     *     'alert_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    retrieve(roleID, params, options) {
+    retrieve(alertID, params, options) {
         const { project_id } = params;
-        return this._client.get(path `/projects/${project_id}/roles/${roleID}`, resolveResourceRequestOptions$1h(options, (options) => ({
+        return this._client.get(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, resolveResourceRequestOptions$1j(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Updates an existing project role.
+     * Updates a project spend alert.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.projects.roles.update(
-     *     'role_id',
-     *     { project_id: 'project_id' },
+     * const projectSpendAlert =
+     *   await client.admin.organization.projects.spendAlerts.update(
+     *     'alert_id',
+     *     {
+     *       project_id: 'project_id',
+     *       currency: 'USD',
+     *       interval: 'month',
+     *       notification_channel: {
+     *         recipients: ['string'],
+     *         type: 'email',
+     *       },
+     *       threshold_amount: 0,
+     *     },
      *   );
      * ```
      */
-    update(roleID, params, options) {
+    update(alertID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/projects/${project_id}/roles/${roleID}`, resolveResourceRequestOptions$1h(options, (options) => ({
+        return this._client.post(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, resolveResourceRequestOptions$1j(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     list(projectID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$F(query, ['after', 'limit', 'order'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$F(query, ['after', 'before', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/projects/${projectID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1h(options, (options) => ({
+        return this._client.getAPIList(path `/organization/projects/${projectID}/spend_alerts`, (ConversationCursorPage), resolveResourceRequestOptions$1j(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Deletes a custom role from a project.
+     * Deletes a project spend alert.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.projects.roles.delete(
-     *     'role_id',
+     * const projectSpendAlertDeleted =
+     *   await client.admin.organization.projects.spendAlerts.delete(
+     *     'alert_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    delete(roleID, params, options) {
+    delete(alertID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/projects/${project_id}/roles/${roleID}`, resolveResourceRequestOptions$1h(options, (options) => ({
+        return this._client.delete(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, resolveResourceRequestOptions$1j(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+}
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1i(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class SpendLimit extends APIResource {
+    /**
+     * Get a project's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const projectSpendLimit =
+     *   await client.admin.organization.projects.spendLimit.retrieve(
+     *     'proj_123',
+     *   );
+     * ```
+     */
+    retrieve(projectID, options) {
+        return this._client.get(path `/organization/projects/${projectID}/spend_limit`, resolveResourceRequestOptions$1i(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Create or replace a project's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const projectSpendLimit =
+     *   await client.admin.organization.projects.spendLimit.update(
+     *     'proj_123',
+     *     {
+     *       currency: 'USD',
+     *       interval: 'month',
+     *       threshold_amount: 1,
+     *     },
+     *   );
+     * ```
+     */
+    update(projectID, body, options) {
+        return this._client.post(path `/organization/projects/${projectID}/spend_limit`, resolveResourceRequestOptions$1i(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Delete a project's hard spend limit.
+     *
+     * @example
+     * ```ts
+     * const projectSpendLimitDeleted =
+     *   await client.admin.organization.projects.spendLimit.delete(
+     *     'proj_123',
+     *   );
+     * ```
+     */
+    delete(projectID, options) {
+        return this._client.delete(path `/organization/projects/${projectID}/spend_limit`, resolveResourceRequestOptions$1i(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+}
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1h(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+let Roles$2 = class Roles extends APIResource {
+    /**
+     * Assigns a project role to a group within a project.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.groups.roles.create(
+     *     'group_id',
+     *     { project_id: 'project_id', role_id: 'role_id' },
+     *   );
+     * ```
+     */
+    create(groupID, params, options) {
+        const { project_id, ...body } = params;
+        return this._client.post(path `/projects/${project_id}/groups/${groupID}/roles`, resolveResourceRequestOptions$1h(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Retrieves a project role assigned to a group.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.groups.roles.retrieve(
+     *     'role_id',
+     *     { project_id: 'project_id', group_id: 'group_id' },
+     *   );
+     * ```
+     */
+    retrieve(roleID, params, options) {
+        const { project_id, group_id } = params;
+        return this._client.get(path `/projects/${project_id}/groups/${group_id}/roles/${roleID}`, resolveResourceRequestOptions$1h(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Lists the project roles assigned to a group within a project.
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const roleListResponse of client.admin.organization.projects.groups.roles.list(
+     *   'group_id',
+     *   { project_id: 'project_id' },
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    list(groupID, params, options) {
+        const { project_id, ...query } = params;
+        return this._client.getAPIList(path `/projects/${project_id}/groups/${groupID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1h(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Unassigns a project role from a group within a project.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.groups.roles.delete(
+     *     'role_id',
+     *     { project_id: 'project_id', group_id: 'group_id' },
+     *   );
+     * ```
+     */
+    delete(roleID, params, options) {
+        const { project_id, group_id } = params;
+        return this._client.delete(path `/projects/${project_id}/groups/${group_id}/roles/${roleID}`, resolveResourceRequestOptions$1h(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
@@ -45749,174 +46201,106 @@ function normalizeRequestOptionsForQuery$E(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class SpendAlerts extends APIResource {
+class Groups extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.roles = new Roles$2(this._client);
+    }
     /**
-     * Creates a project spend alert.
+     * Grants a group access to a project.
      *
      * @example
      * ```ts
-     * const projectSpendAlert =
-     *   await client.admin.organization.projects.spendAlerts.create(
+     * const projectGroup =
+     *   await client.admin.organization.projects.groups.create(
      *     'project_id',
-     *     {
-     *       currency: 'USD',
-     *       interval: 'month',
-     *       notification_channel: {
-     *         recipients: ['string'],
-     *         type: 'email',
-     *       },
-     *       threshold_amount: 0,
-     *     },
+     *     { group_id: 'group_id', role: 'role' },
      *   );
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/spend_alerts`, resolveResourceRequestOptions$1g(options, (options) => ({
+        return this._client.post(path `/organization/projects/${projectID}/groups`, resolveResourceRequestOptions$1g(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves a project spend alert.
+     * Retrieves a project's group.
      *
      * @example
      * ```ts
-     * const projectSpendAlert =
-     *   await client.admin.organization.projects.spendAlerts.retrieve(
-     *     'alert_id',
+     * const projectGroup =
+     *   await client.admin.organization.projects.groups.retrieve(
+     *     'group_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    retrieve(alertID, params, options) {
-        const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, resolveResourceRequestOptions$1g(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Updates a project spend alert.
-     *
-     * @example
-     * ```ts
-     * const projectSpendAlert =
-     *   await client.admin.organization.projects.spendAlerts.update(
-     *     'alert_id',
-     *     {
-     *       project_id: 'project_id',
-     *       currency: 'USD',
-     *       interval: 'month',
-     *       notification_channel: {
-     *         recipients: ['string'],
-     *         type: 'email',
-     *       },
-     *       threshold_amount: 0,
-     *     },
-     *   );
-     * ```
-     */
-    update(alertID, params, options) {
-        const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, resolveResourceRequestOptions$1g(options, (options) => ({
-            body,
+    retrieve(groupID, params, options) {
+        const { project_id, ...query } = params;
+        return this._client.get(path `/organization/projects/${project_id}/groups/${groupID}`, resolveResourceRequestOptions$1g(options, (options) => ({
+            query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     list(projectID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$E(query, ['after', 'before', 'limit', 'order'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$E(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/projects/${projectID}/spend_alerts`, (ConversationCursorPage), resolveResourceRequestOptions$1g(options, (options) => ({
+        return this._client.getAPIList(path `/organization/projects/${projectID}/groups`, (NextCursorPage), resolveResourceRequestOptions$1g(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Deletes a project spend alert.
+     * Revokes a group's access to a project.
      *
      * @example
      * ```ts
-     * const projectSpendAlertDeleted =
-     *   await client.admin.organization.projects.spendAlerts.delete(
-     *     'alert_id',
+     * const group =
+     *   await client.admin.organization.projects.groups.delete(
+     *     'group_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    delete(alertID, params, options) {
+    delete(groupID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, resolveResourceRequestOptions$1g(options, (options) => ({
+        return this._client.delete(path `/organization/projects/${project_id}/groups/${groupID}`, resolveResourceRequestOptions$1g(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
 }
+Groups.Roles = Roles$2;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$1f(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
-class SpendLimit extends APIResource {
+class APIKeys extends APIResource {
     /**
-     * Get a project's hard spend limit.
+     * Creates an API key for a service account in the project.
      *
      * @example
      * ```ts
-     * const projectSpendLimit =
-     *   await client.admin.organization.projects.spendLimit.retrieve(
-     *     'proj_123',
+     * const apiKey =
+     *   await client.admin.organization.projects.serviceAccounts.apiKeys.create(
+     *     'service_account_id',
+     *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}/spend_limit`, resolveResourceRequestOptions$1f(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Create or replace a project's hard spend limit.
-     *
-     * @example
-     * ```ts
-     * const projectSpendLimit =
-     *   await client.admin.organization.projects.spendLimit.update(
-     *     'proj_123',
-     *     {
-     *       currency: 'USD',
-     *       interval: 'month',
-     *       threshold_amount: 1,
-     *     },
-     *   );
-     * ```
-     */
-    update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/spend_limit`, resolveResourceRequestOptions$1f(options, (options) => ({
+    create(serviceAccountID, params, options) {
+        const { project_id, ...body } = params;
+        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}/api_keys`, resolveResourceRequestOptions$1f(options, (options) => ({
             body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Delete a project's hard spend limit.
-     *
-     * @example
-     * ```ts
-     * const projectSpendLimitDeleted =
-     *   await client.admin.organization.projects.spendLimit.delete(
-     *     'proj_123',
-     *   );
-     * ```
-     */
-    delete(projectID, options) {
-        return this._client.delete(path `/organization/projects/${projectID}/spend_limit`, resolveResourceRequestOptions$1f(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
@@ -45925,93 +46309,6 @@ class SpendLimit extends APIResource {
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$1e(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-let Roles$2 = class Roles extends APIResource {
-    /**
-     * Assigns a project role to a group within a project.
-     *
-     * @example
-     * ```ts
-     * const role =
-     *   await client.admin.organization.projects.groups.roles.create(
-     *     'group_id',
-     *     { project_id: 'project_id', role_id: 'role_id' },
-     *   );
-     * ```
-     */
-    create(groupID, params, options) {
-        const { project_id, ...body } = params;
-        return this._client.post(path `/projects/${project_id}/groups/${groupID}/roles`, resolveResourceRequestOptions$1e(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Retrieves a project role assigned to a group.
-     *
-     * @example
-     * ```ts
-     * const role =
-     *   await client.admin.organization.projects.groups.roles.retrieve(
-     *     'role_id',
-     *     { project_id: 'project_id', group_id: 'group_id' },
-     *   );
-     * ```
-     */
-    retrieve(roleID, params, options) {
-        const { project_id, group_id } = params;
-        return this._client.get(path `/projects/${project_id}/groups/${group_id}/roles/${roleID}`, resolveResourceRequestOptions$1e(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Lists the project roles assigned to a group within a project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const roleListResponse of client.admin.organization.projects.groups.roles.list(
-     *   'group_id',
-     *   { project_id: 'project_id' },
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    list(groupID, params, options) {
-        const { project_id, ...query } = params;
-        return this._client.getAPIList(path `/projects/${project_id}/groups/${groupID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1e(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Unassigns a project role from a group within a project.
-     *
-     * @example
-     * ```ts
-     * const role =
-     *   await client.admin.organization.projects.groups.roles.delete(
-     *     'role_id',
-     *     { project_id: 'project_id', group_id: 'group_id' },
-     *   );
-     * ```
-     */
-    delete(roleID, params, options) {
-        const { project_id, group_id } = params;
-        return this._client.delete(path `/projects/${project_id}/groups/${group_id}/roles/${roleID}`, resolveResourceRequestOptions$1e(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-};
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1d(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -46066,114 +46363,197 @@ function normalizeRequestOptionsForQuery$D(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class Groups extends APIResource {
+class ServiceAccounts extends APIResource {
     constructor() {
         super(...arguments);
-        this.roles = new Roles$2(this._client);
+        this.apiKeys = new APIKeys(this._client);
     }
     /**
-     * Grants a group access to a project.
+     * Creates a new service account in the project. By default, this also returns an
+     * unredacted API key for the service account.
      *
      * @example
      * ```ts
-     * const projectGroup =
-     *   await client.admin.organization.projects.groups.create(
+     * const serviceAccount =
+     *   await client.admin.organization.projects.serviceAccounts.create(
      *     'project_id',
-     *     { group_id: 'group_id', role: 'role' },
+     *     { name: 'name' },
      *   );
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/groups`, resolveResourceRequestOptions$1d(options, (options) => ({
+        return this._client.post(path `/organization/projects/${projectID}/service_accounts`, resolveResourceRequestOptions$1e(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves a project's group.
+     * Retrieves a service account in the project.
      *
      * @example
      * ```ts
-     * const projectGroup =
-     *   await client.admin.organization.projects.groups.retrieve(
-     *     'group_id',
-     *     { project_id: 'project_id' },
-     *   );
-     * ```
-     */
-    retrieve(groupID, params, options) {
-        const { project_id, ...query } = params;
-        return this._client.get(path `/organization/projects/${project_id}/groups/${groupID}`, resolveResourceRequestOptions$1d(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    list(projectID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$D(query, ['after', 'limit', 'order'], options);
-        if (normalizeRequestOptionsForQueryOptions !== undefined) {
-            options = normalizeRequestOptionsForQueryOptions;
-            query = {};
-        }
-        query = query;
-        return this._client.getAPIList(path `/organization/projects/${projectID}/groups`, (NextCursorPage), resolveResourceRequestOptions$1d(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Revokes a group's access to a project.
-     *
-     * @example
-     * ```ts
-     * const group =
-     *   await client.admin.organization.projects.groups.delete(
-     *     'group_id',
-     *     { project_id: 'project_id' },
-     *   );
-     * ```
-     */
-    delete(groupID, params, options) {
-        const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/groups/${groupID}`, resolveResourceRequestOptions$1d(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-}
-Groups.Roles = Roles$2;
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1c(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-class APIKeys extends APIResource {
-    /**
-     * Creates an API key for a service account in the project.
-     *
-     * @example
-     * ```ts
-     * const apiKey =
-     *   await client.admin.organization.projects.serviceAccounts.apiKeys.create(
+     * const projectServiceAccount =
+     *   await client.admin.organization.projects.serviceAccounts.retrieve(
      *     'service_account_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    create(serviceAccountID, params, options) {
+    retrieve(serviceAccountID, params, options) {
+        const { project_id } = params;
+        return this._client.get(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, resolveResourceRequestOptions$1e(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Updates a service account in the project.
+     *
+     * @example
+     * ```ts
+     * const projectServiceAccount =
+     *   await client.admin.organization.projects.serviceAccounts.update(
+     *     'service_account_id',
+     *     { project_id: 'project_id' },
+     *   );
+     * ```
+     */
+    update(serviceAccountID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}/api_keys`, resolveResourceRequestOptions$1c(options, (options) => ({
+        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, resolveResourceRequestOptions$1e(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
+    list(projectID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$D(query, ['after', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/projects/${projectID}/service_accounts`, (ConversationCursorPage), resolveResourceRequestOptions$1e(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Deletes a service account from the project.
+     *
+     * Returns confirmation of service account deletion, or an error if the project is
+     * archived (archived projects have no service accounts).
+     *
+     * @example
+     * ```ts
+     * const serviceAccount =
+     *   await client.admin.organization.projects.serviceAccounts.delete(
+     *     'service_account_id',
+     *     { project_id: 'project_id' },
+     *   );
+     * ```
+     */
+    delete(serviceAccountID, params, options) {
+        const { project_id } = params;
+        return this._client.delete(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, resolveResourceRequestOptions$1e(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
 }
+ServiceAccounts.APIKeys = APIKeys;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1b(options, buildOptions) {
+function resolveResourceRequestOptions$1d(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+let Roles$1 = class Roles extends APIResource {
+    /**
+     * Assigns a project role to a user within a project.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.users.roles.create(
+     *     'user_id',
+     *     { project_id: 'project_id', role_id: 'role_id' },
+     *   );
+     * ```
+     */
+    create(userID, params, options) {
+        const { project_id, ...body } = params;
+        return this._client.post(path `/projects/${project_id}/users/${userID}/roles`, resolveResourceRequestOptions$1d(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Retrieves a project role assigned to a user.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.users.roles.retrieve(
+     *     'role_id',
+     *     { project_id: 'project_id', user_id: 'user_id' },
+     *   );
+     * ```
+     */
+    retrieve(roleID, params, options) {
+        const { project_id, user_id } = params;
+        return this._client.get(path `/projects/${project_id}/users/${user_id}/roles/${roleID}`, resolveResourceRequestOptions$1d(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Lists the project roles assigned to a user within a project.
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const roleListResponse of client.admin.organization.projects.users.roles.list(
+     *   'user_id',
+     *   { project_id: 'project_id' },
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    list(userID, params, options) {
+        const { project_id, ...query } = params;
+        return this._client.getAPIList(path `/projects/${project_id}/users/${userID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1d(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Unassigns a project role from a user within a project.
+     *
+     * @example
+     * ```ts
+     * const role =
+     *   await client.admin.organization.projects.users.roles.delete(
+     *     'role_id',
+     *     { project_id: 'project_id', user_id: 'user_id' },
+     *   );
+     * ```
+     */
+    delete(roleID, params, options) {
+        const { project_id, user_id } = params;
+        return this._client.delete(path `/projects/${project_id}/users/${user_id}/roles/${roleID}`, resolveResourceRequestOptions$1d(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+};
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$1c(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -46228,65 +46608,65 @@ function normalizeRequestOptionsForQuery$C(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class ServiceAccounts extends APIResource {
+let Users$1 = class Users extends APIResource {
     constructor() {
         super(...arguments);
-        this.apiKeys = new APIKeys(this._client);
+        this.roles = new Roles$1(this._client);
     }
     /**
-     * Creates a new service account in the project. By default, this also returns an
-     * unredacted API key for the service account.
+     * Adds a user to the project. Users must already be members of the organization to
+     * be added to a project.
      *
      * @example
      * ```ts
-     * const serviceAccount =
-     *   await client.admin.organization.projects.serviceAccounts.create(
+     * const projectUser =
+     *   await client.admin.organization.projects.users.create(
      *     'project_id',
-     *     { name: 'name' },
+     *     { role: 'role' },
      *   );
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/service_accounts`, resolveResourceRequestOptions$1b(options, (options) => ({
+        return this._client.post(path `/organization/projects/${projectID}/users`, resolveResourceRequestOptions$1c(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves a service account in the project.
+     * Retrieves a user in the project.
      *
      * @example
      * ```ts
-     * const projectServiceAccount =
-     *   await client.admin.organization.projects.serviceAccounts.retrieve(
-     *     'service_account_id',
+     * const projectUser =
+     *   await client.admin.organization.projects.users.retrieve(
+     *     'user_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    retrieve(serviceAccountID, params, options) {
+    retrieve(userID, params, options) {
         const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, resolveResourceRequestOptions$1b(options, (options) => ({
+        return this._client.get(path `/organization/projects/${project_id}/users/${userID}`, resolveResourceRequestOptions$1c(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Updates a service account in the project.
+     * Modifies a user's role in the project.
      *
      * @example
      * ```ts
-     * const projectServiceAccount =
-     *   await client.admin.organization.projects.serviceAccounts.update(
-     *     'service_account_id',
+     * const projectUser =
+     *   await client.admin.organization.projects.users.update(
+     *     'user_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    update(serviceAccountID, params, options) {
+    update(userID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, resolveResourceRequestOptions$1b(options, (options) => ({
+        return this._client.post(path `/organization/projects/${project_id}/users/${userID}`, resolveResourceRequestOptions$1c(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
@@ -46299,126 +46679,39 @@ class ServiceAccounts extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/projects/${projectID}/service_accounts`, (ConversationCursorPage), resolveResourceRequestOptions$1b(options, (options) => ({
+        return this._client.getAPIList(path `/organization/projects/${projectID}/users`, (ConversationCursorPage), resolveResourceRequestOptions$1c(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Deletes a service account from the project.
+     * Deletes a user from the project.
      *
-     * Returns confirmation of service account deletion, or an error if the project is
-     * archived (archived projects have no service accounts).
+     * Returns confirmation of project user deletion, or an error if the project is
+     * archived (archived projects have no users).
      *
      * @example
      * ```ts
-     * const serviceAccount =
-     *   await client.admin.organization.projects.serviceAccounts.delete(
-     *     'service_account_id',
+     * const user =
+     *   await client.admin.organization.projects.users.delete(
+     *     'user_id',
      *     { project_id: 'project_id' },
      *   );
      * ```
      */
-    delete(serviceAccountID, params, options) {
+    delete(userID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, resolveResourceRequestOptions$1b(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-}
-ServiceAccounts.APIKeys = APIKeys;
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$1a(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-let Roles$1 = class Roles extends APIResource {
-    /**
-     * Assigns a project role to a user within a project.
-     *
-     * @example
-     * ```ts
-     * const role =
-     *   await client.admin.organization.projects.users.roles.create(
-     *     'user_id',
-     *     { project_id: 'project_id', role_id: 'role_id' },
-     *   );
-     * ```
-     */
-    create(userID, params, options) {
-        const { project_id, ...body } = params;
-        return this._client.post(path `/projects/${project_id}/users/${userID}/roles`, resolveResourceRequestOptions$1a(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Retrieves a project role assigned to a user.
-     *
-     * @example
-     * ```ts
-     * const role =
-     *   await client.admin.organization.projects.users.roles.retrieve(
-     *     'role_id',
-     *     { project_id: 'project_id', user_id: 'user_id' },
-     *   );
-     * ```
-     */
-    retrieve(roleID, params, options) {
-        const { project_id, user_id } = params;
-        return this._client.get(path `/projects/${project_id}/users/${user_id}/roles/${roleID}`, resolveResourceRequestOptions$1a(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Lists the project roles assigned to a user within a project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const roleListResponse of client.admin.organization.projects.users.roles.list(
-     *   'user_id',
-     *   { project_id: 'project_id' },
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    list(userID, params, options) {
-        const { project_id, ...query } = params;
-        return this._client.getAPIList(path `/projects/${project_id}/users/${userID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1a(options, (options) => ({
-            query,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Unassigns a project role from a user within a project.
-     *
-     * @example
-     * ```ts
-     * const role =
-     *   await client.admin.organization.projects.users.roles.delete(
-     *     'role_id',
-     *     { project_id: 'project_id', user_id: 'user_id' },
-     *   );
-     * ```
-     */
-    delete(roleID, params, options) {
-        const { project_id, user_id } = params;
-        return this._client.delete(path `/projects/${project_id}/users/${user_id}/roles/${roleID}`, resolveResourceRequestOptions$1a(options, (options) => ({
+        return this._client.delete(path `/organization/projects/${project_id}/users/${userID}`, resolveResourceRequestOptions$1c(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
 };
+Users$1.Roles = Roles$1;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$19(options, buildOptions) {
+function resolveResourceRequestOptions$1b(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -46473,110 +46766,123 @@ function normalizeRequestOptionsForQuery$B(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Users$1 = class Users extends APIResource {
+class Projects extends APIResource {
     constructor() {
         super(...arguments);
-        this.roles = new Roles$1(this._client);
+        this.users = new Users$1(this._client);
+        this.serviceAccounts = new ServiceAccounts(this._client);
+        this.apiKeys = new APIKeys$1(this._client);
+        this.rateLimits = new RateLimits(this._client);
+        this.modelPermissions = new ModelPermissions(this._client);
+        this.hostedToolPermissions = new HostedToolPermissions(this._client);
+        this.groups = new Groups(this._client);
+        this.roles = new Roles$3(this._client);
+        this.dataRetention = new DataRetention(this._client);
+        this.spendLimit = new SpendLimit(this._client);
+        this.spendAlerts = new SpendAlerts(this._client);
+        this.certificates = new Certificates(this._client);
     }
     /**
-     * Adds a user to the project. Users must already be members of the organization to
-     * be added to a project.
+     * Create a new project in the organization. Projects can be created and archived,
+     * but cannot be deleted.
      *
      * @example
      * ```ts
-     * const projectUser =
-     *   await client.admin.organization.projects.users.create(
+     * const project =
+     *   await client.admin.organization.projects.create({
+     *     name: 'name',
+     *   });
+     * ```
+     */
+    create(body, options) {
+        return this._client.post('/organization/projects', resolveResourceRequestOptions$1b(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Retrieves a project.
+     *
+     * @example
+     * ```ts
+     * const project =
+     *   await client.admin.organization.projects.retrieve(
      *     'project_id',
-     *     { role: 'role' },
      *   );
      * ```
      */
-    create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/users`, resolveResourceRequestOptions$19(options, (options) => ({
-            body,
+    retrieve(projectID, options) {
+        return this._client.get(path `/organization/projects/${projectID}`, resolveResourceRequestOptions$1b(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves a user in the project.
+     * Modifies a project in the organization.
      *
      * @example
      * ```ts
-     * const projectUser =
-     *   await client.admin.organization.projects.users.retrieve(
-     *     'user_id',
-     *     { project_id: 'project_id' },
+     * const project =
+     *   await client.admin.organization.projects.update(
+     *     'project_id',
      *   );
      * ```
      */
-    retrieve(userID, params, options) {
-        const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/users/${userID}`, resolveResourceRequestOptions$19(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Modifies a user's role in the project.
-     *
-     * @example
-     * ```ts
-     * const projectUser =
-     *   await client.admin.organization.projects.users.update(
-     *     'user_id',
-     *     { project_id: 'project_id' },
-     *   );
-     * ```
-     */
-    update(userID, params, options) {
-        const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/users/${userID}`, resolveResourceRequestOptions$19(options, (options) => ({
+    update(projectID, body, options) {
+        return this._client.post(path `/organization/projects/${projectID}`, resolveResourceRequestOptions$1b(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-    list(projectID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$B(query, ['after', 'limit'], options);
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$B(query, ['after', 'include_archived', 'limit'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/projects/${projectID}/users`, (ConversationCursorPage), resolveResourceRequestOptions$19(options, (options) => ({
+        return this._client.getAPIList('/organization/projects', (ConversationCursorPage), resolveResourceRequestOptions$1b(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Deletes a user from the project.
-     *
-     * Returns confirmation of project user deletion, or an error if the project is
-     * archived (archived projects have no users).
+     * Archives a project in the organization. Archived projects cannot be used or
+     * updated.
      *
      * @example
      * ```ts
-     * const user =
-     *   await client.admin.organization.projects.users.delete(
-     *     'user_id',
-     *     { project_id: 'project_id' },
+     * const project =
+     *   await client.admin.organization.projects.archive(
+     *     'project_id',
      *   );
      * ```
      */
-    delete(userID, params, options) {
-        const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/users/${userID}`, resolveResourceRequestOptions$19(options, (options) => ({
+    archive(projectID, options) {
+        return this._client.post(path `/organization/projects/${projectID}/archive`, resolveResourceRequestOptions$1b(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-};
-Users$1.Roles = Roles$1;
+}
+Projects.Users = Users$1;
+Projects.ServiceAccounts = ServiceAccounts;
+Projects.APIKeys = APIKeys$1;
+Projects.RateLimits = RateLimits;
+Projects.ModelPermissions = ModelPermissions;
+Projects.HostedToolPermissions = HostedToolPermissions;
+Projects.Groups = Groups;
+Projects.Roles = Roles$3;
+Projects.DataRetention = DataRetention;
+Projects.SpendLimit = SpendLimit;
+Projects.SpendAlerts = SpendAlerts;
+Projects.Certificates = Certificates;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$18(options, buildOptions) {
+function resolveResourceRequestOptions$1a(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -46631,123 +46937,81 @@ function normalizeRequestOptionsForQuery$A(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class Projects extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.users = new Users$1(this._client);
-        this.serviceAccounts = new ServiceAccounts(this._client);
-        this.apiKeys = new APIKeys$1(this._client);
-        this.rateLimits = new RateLimits(this._client);
-        this.modelPermissions = new ModelPermissions(this._client);
-        this.hostedToolPermissions = new HostedToolPermissions(this._client);
-        this.groups = new Groups(this._client);
-        this.roles = new Roles$3(this._client);
-        this.dataRetention = new DataRetention(this._client);
-        this.spendLimit = new SpendLimit(this._client);
-        this.spendAlerts = new SpendAlerts(this._client);
-        this.certificates = new Certificates(this._client);
-    }
+class Roles extends APIResource {
     /**
-     * Create a new project in the organization. Projects can be created and archived,
-     * but cannot be deleted.
+     * Assigns an organization role to a user within the organization.
      *
      * @example
      * ```ts
-     * const project =
-     *   await client.admin.organization.projects.create({
-     *     name: 'name',
-     *   });
+     * const role =
+     *   await client.admin.organization.users.roles.create(
+     *     'user_id',
+     *     { role_id: 'role_id' },
+     *   );
      * ```
      */
-    create(body, options) {
-        return this._client.post('/organization/projects', resolveResourceRequestOptions$18(options, (options) => ({
+    create(userID, body, options) {
+        return this._client.post(path `/organization/users/${userID}/roles`, resolveResourceRequestOptions$1a(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Retrieves a project.
+     * Retrieves an organization role assigned to a user.
      *
      * @example
      * ```ts
-     * const project =
-     *   await client.admin.organization.projects.retrieve(
-     *     'project_id',
+     * const role =
+     *   await client.admin.organization.users.roles.retrieve(
+     *     'role_id',
+     *     { user_id: 'user_id' },
      *   );
      * ```
      */
-    retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}`, resolveResourceRequestOptions$18(options, (options) => ({
+    retrieve(roleID, params, options) {
+        const { user_id } = params;
+        return this._client.get(path `/organization/users/${user_id}/roles/${roleID}`, resolveResourceRequestOptions$1a(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-    /**
-     * Modifies a project in the organization.
-     *
-     * @example
-     * ```ts
-     * const project =
-     *   await client.admin.organization.projects.update(
-     *     'project_id',
-     *   );
-     * ```
-     */
-    update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}`, resolveResourceRequestOptions$18(options, (options) => ({
-            body,
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$A(query, ['after', 'include_archived', 'limit'], options);
+    list(userID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$A(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/projects', (ConversationCursorPage), resolveResourceRequestOptions$18(options, (options) => ({
+        return this._client.getAPIList(path `/organization/users/${userID}/roles`, (NextCursorPage), resolveResourceRequestOptions$1a(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Archives a project in the organization. Archived projects cannot be used or
-     * updated.
+     * Unassigns an organization role from a user within the organization.
      *
      * @example
      * ```ts
-     * const project =
-     *   await client.admin.organization.projects.archive(
-     *     'project_id',
+     * const role =
+     *   await client.admin.organization.users.roles.delete(
+     *     'role_id',
+     *     { user_id: 'user_id' },
      *   );
      * ```
      */
-    archive(projectID, options) {
-        return this._client.post(path `/organization/projects/${projectID}/archive`, resolveResourceRequestOptions$18(options, (options) => ({
+    delete(roleID, params, options) {
+        const { user_id } = params;
+        return this._client.delete(path `/organization/users/${user_id}/roles/${roleID}`, resolveResourceRequestOptions$1a(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
 }
-Projects.Users = Users$1;
-Projects.ServiceAccounts = ServiceAccounts;
-Projects.APIKeys = APIKeys$1;
-Projects.RateLimits = RateLimits;
-Projects.ModelPermissions = ModelPermissions;
-Projects.HostedToolPermissions = HostedToolPermissions;
-Projects.Groups = Groups;
-Projects.Roles = Roles$3;
-Projects.DataRetention = DataRetention;
-Projects.SpendLimit = SpendLimit;
-Projects.SpendAlerts = SpendAlerts;
-Projects.Certificates = Certificates;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$17(options, buildOptions) {
+function resolveResourceRequestOptions$19(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -46802,81 +47066,236 @@ function normalizeRequestOptionsForQuery$z(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class Roles extends APIResource {
+class Users extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.roles = new Roles(this._client);
+    }
     /**
-     * Assigns an organization role to a user within the organization.
+     * Retrieves a user by their identifier.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.users.roles.create(
-     *     'user_id',
-     *     { role_id: 'role_id' },
-     *   );
+     * const organizationUser =
+     *   await client.admin.organization.users.retrieve('user_id');
      * ```
      */
-    create(userID, body, options) {
-        return this._client.post(path `/organization/users/${userID}/roles`, resolveResourceRequestOptions$17(options, (options) => ({
+    retrieve(userID, options) {
+        return this._client.get(path `/organization/users/${userID}`, resolveResourceRequestOptions$19(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Modifies a user's role in the organization.
+     *
+     * @example
+     * ```ts
+     * const organizationUser =
+     *   await client.admin.organization.users.update('user_id');
+     * ```
+     */
+    update(userID, body, options) {
+        return this._client.post(path `/organization/users/${userID}`, resolveResourceRequestOptions$19(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
-    /**
-     * Retrieves an organization role assigned to a user.
-     *
-     * @example
-     * ```ts
-     * const role =
-     *   await client.admin.organization.users.roles.retrieve(
-     *     'role_id',
-     *     { user_id: 'user_id' },
-     *   );
-     * ```
-     */
-    retrieve(roleID, params, options) {
-        const { user_id } = params;
-        return this._client.get(path `/organization/users/${user_id}/roles/${roleID}`, resolveResourceRequestOptions$17(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    list(userID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$z(query, ['after', 'limit', 'order'], options);
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$z(query, ['after', 'emails', 'limit'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/organization/users/${userID}/roles`, (NextCursorPage), resolveResourceRequestOptions$17(options, (options) => ({
+        return this._client.getAPIList('/organization/users', (ConversationCursorPage), resolveResourceRequestOptions$19(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
     /**
-     * Unassigns an organization role from a user within the organization.
+     * Deletes a user from the organization.
      *
      * @example
      * ```ts
-     * const role =
-     *   await client.admin.organization.users.roles.delete(
-     *     'role_id',
-     *     { user_id: 'user_id' },
-     *   );
+     * const user = await client.admin.organization.users.delete(
+     *   'user_id',
+     * );
      * ```
      */
-    delete(roleID, params, options) {
-        const { user_id } = params;
-        return this._client.delete(path `/organization/users/${user_id}/roles/${roleID}`, resolveResourceRequestOptions$17(options, (options) => ({
+    delete(userID, options) {
+        return this._client.delete(path `/organization/users/${userID}`, resolveResourceRequestOptions$19(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
         })));
     }
 }
+Users.Roles = Roles;
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+class Organization extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.auditLogs = new AuditLogs(this._client);
+        this.adminAPIKeys = new AdminAPIKeys(this._client);
+        this.usage = new Usage(this._client);
+        this.invites = new Invites(this._client);
+        this.users = new Users(this._client);
+        this.groups = new Groups$1(this._client);
+        this.roles = new Roles$5(this._client);
+        this.dataRetention = new DataRetention$1(this._client);
+        this.externalStorage = new ExternalStorage(this._client);
+        this.spendLimit = new SpendLimit$1(this._client);
+        this.spendAlerts = new SpendAlerts$1(this._client);
+        this.certificates = new Certificates$1(this._client);
+        this.projects = new Projects(this._client);
+    }
+}
+Organization.AuditLogs = AuditLogs;
+Organization.AdminAPIKeys = AdminAPIKeys;
+Organization.Usage = Usage;
+Organization.Invites = Invites;
+Organization.Users = Users;
+Organization.Groups = Groups$1;
+Organization.Roles = Roles$5;
+Organization.DataRetention = DataRetention$1;
+Organization.ExternalStorage = ExternalStorage;
+Organization.SpendLimit = SpendLimit$1;
+Organization.SpendAlerts = SpendAlerts$1;
+Organization.Certificates = Certificates$1;
+Organization.Projects = Projects;
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+class Admin extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.organization = new Organization(this._client);
+    }
+}
+Admin.Organization = Organization;
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$18(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+/**
+ * Turn audio into text or text into audio.
+ */
+class Speech extends APIResource {
+    /**
+     * Generates audio from the input text.
+     *
+     * Returns the audio file content, or a stream of audio events.
+     *
+     * @example
+     * ```ts
+     * const speech = await client.audio.speech.create({
+     *   input: 'input',
+     *   model: 'tts-1',
+     *   voice: 'ash',
+     * });
+     *
+     * const content = await speech.blob();
+     * console.log(content);
+     * ```
+     */
+    create(body, options) {
+        return this._client.post('/audio/speech', resolveResourceRequestOptions$18(options, (options) => ({
+            body,
+            ...options,
+            headers: buildHeaders([{ Accept: 'application/octet-stream' }, options?.headers]),
+            __security: { bearerAuth: true },
+            __binaryResponse: true,
+        })));
+    }
+}
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$17(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+/**
+ * Turn audio into text or text into audio.
+ */
+class Transcriptions extends APIResource {
+    create(body, options) {
+        return this._client.post('/audio/transcriptions', resolveResourceRequestOptions$17(options, (options) => multipartFormRequestOptions({
+            body,
+            ...options,
+            stream: body.stream ?? false,
+            __metadata: { model: body.model },
+            __security: { bearerAuth: true },
+        }, this._client)));
+    }
+}
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$16(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+/**
+ * Turn audio into text or text into audio.
+ */
+let Translations$1 = class Translations extends APIResource {
+    create(body, options) {
+        return this._client.post('/audio/translations', resolveResourceRequestOptions$16(options, (options) => multipartFormRequestOptions({ body, ...options, __metadata: { model: body.model }, __security: { bearerAuth: true } }, this._client)));
+    }
+};
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$15(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+/**
+ * Turn audio into text or text into audio.
+ */
+class Voices extends APIResource {
+    /**
+     * Creates a voice from a text prompt or from a consent recording and an audio
+     * sample.
+     *
+     * For prompt-based creation, send `type: "prompt"` with a `name` and `prompt` as
+     * JSON or multipart form data. For creation from an audio sample, send
+     * `type: "audio_sample"` with a `name`, `audio_sample`, and `consent` recording ID
+     * as multipart form data. The type defaults to `audio_sample` when omitted.
+     *
+     * Returns the saved voice's metadata. Voices created from text prompts are
+     * supported only in Live, not in Realtime or the speech endpoint. The response
+     * does not include preview audio.
+     *
+     * @example
+     * ```ts
+     * const voice = await client.audio.voices.create({
+     *   audio_sample: fs.createReadStream('path/to/file'),
+     *   consent: 'consent',
+     *   name: 'x',
+     * });
+     * ```
+     */
+    create(body, options) {
+        return this._client.post('/audio/voices', resolveResourceRequestOptions$15(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
+    }
+}
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+class Audio extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.transcriptions = new Transcriptions(this._client);
+        this.translations = new Translations$1(this._client);
+        this.speech = new Speech(this._client);
+        this.voices = new Voices(this._client);
+    }
+}
+Audio.Transcriptions = Transcriptions;
+Audio.Translations = Translations$1;
+Audio.Speech = Speech;
+Audio.Voices = Voices;
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$14(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -46931,199 +47350,51 @@ function normalizeRequestOptionsForQuery$y(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class Users extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.roles = new Roles(this._client);
-    }
+/**
+ * Create large batches of API requests to run asynchronously.
+ */
+class Batches extends APIResource {
     /**
-     * Retrieves a user by their identifier.
-     *
-     * @example
-     * ```ts
-     * const organizationUser =
-     *   await client.admin.organization.users.retrieve('user_id');
-     * ```
+     * Creates and executes a batch from an uploaded file of requests
      */
-    retrieve(userID, options) {
-        return this._client.get(path `/organization/users/${userID}`, resolveResourceRequestOptions$16(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-    /**
-     * Modifies a user's role in the organization.
-     *
-     * @example
-     * ```ts
-     * const organizationUser =
-     *   await client.admin.organization.users.update('user_id');
-     * ```
-     */
-    update(userID, body, options) {
-        return this._client.post(path `/organization/users/${userID}`, resolveResourceRequestOptions$16(options, (options) => ({
+    create(body, options) {
+        return this._client.post('/batches', resolveResourceRequestOptions$14(options, (options) => ({
             body,
             ...options,
-            __security: { adminAPIKeyAuth: true },
+            __security: { bearerAuth: true },
         })));
     }
+    /**
+     * Retrieves a batch.
+     */
+    retrieve(batchID, options) {
+        return this._client.get(path `/batches/${batchID}`, resolveResourceRequestOptions$14(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+    }
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$y(query, ['after', 'emails', 'limit'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$y(query, ['after', 'limit'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/organization/users', (ConversationCursorPage), resolveResourceRequestOptions$16(options, (options) => ({
+        return this._client.getAPIList('/batches', (CursorPage), resolveResourceRequestOptions$14(options, (options) => ({
             query,
             ...options,
-            __security: { adminAPIKeyAuth: true },
+            __security: { bearerAuth: true },
         })));
     }
     /**
-     * Deletes a user from the organization.
-     *
-     * @example
-     * ```ts
-     * const user = await client.admin.organization.users.delete(
-     *   'user_id',
-     * );
-     * ```
+     * Cancels an in-progress batch. The batch will be in status `cancelling` for up to
+     * 10 minutes, before changing to `cancelled`, where it will have partial results
+     * (if any) available in the output file.
      */
-    delete(userID, options) {
-        return this._client.delete(path `/organization/users/${userID}`, resolveResourceRequestOptions$16(options, (options) => ({
-            ...options,
-            __security: { adminAPIKeyAuth: true },
-        })));
-    }
-}
-Users.Roles = Roles;
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-class Organization extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.auditLogs = new AuditLogs(this._client);
-        this.adminAPIKeys = new AdminAPIKeys(this._client);
-        this.usage = new Usage(this._client);
-        this.invites = new Invites(this._client);
-        this.users = new Users(this._client);
-        this.groups = new Groups$1(this._client);
-        this.roles = new Roles$5(this._client);
-        this.dataRetention = new DataRetention$1(this._client);
-        this.externalStorage = new ExternalStorage(this._client);
-        this.spendLimit = new SpendLimit$1(this._client);
-        this.spendAlerts = new SpendAlerts$1(this._client);
-        this.certificates = new Certificates$1(this._client);
-        this.projects = new Projects(this._client);
-    }
-}
-Organization.AuditLogs = AuditLogs;
-Organization.AdminAPIKeys = AdminAPIKeys;
-Organization.Usage = Usage;
-Organization.Invites = Invites;
-Organization.Users = Users;
-Organization.Groups = Groups$1;
-Organization.Roles = Roles$5;
-Organization.DataRetention = DataRetention$1;
-Organization.ExternalStorage = ExternalStorage;
-Organization.SpendLimit = SpendLimit$1;
-Organization.SpendAlerts = SpendAlerts$1;
-Organization.Certificates = Certificates$1;
-Organization.Projects = Projects;
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-class Admin extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.organization = new Organization(this._client);
-    }
-}
-Admin.Organization = Organization;
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$15(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-/**
- * Turn audio into text or text into audio.
- */
-class Speech extends APIResource {
-    /**
-     * Generates audio from the input text.
-     *
-     * Returns the audio file content, or a stream of audio events.
-     *
-     * @example
-     * ```ts
-     * const speech = await client.audio.speech.create({
-     *   input: 'input',
-     *   model: 'tts-1',
-     *   voice: 'ash',
-     * });
-     *
-     * const content = await speech.blob();
-     * console.log(content);
-     * ```
-     */
-    create(body, options) {
-        return this._client.post('/audio/speech', resolveResourceRequestOptions$15(options, (options) => ({
-            body,
-            ...options,
-            headers: buildHeaders([{ Accept: 'application/octet-stream' }, options?.headers]),
-            __security: { bearerAuth: true },
-            __binaryResponse: true,
-        })));
-    }
-}
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$14(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-/**
- * Turn audio into text or text into audio.
- */
-class Transcriptions extends APIResource {
-    create(body, options) {
-        return this._client.post('/audio/transcriptions', resolveResourceRequestOptions$14(options, (options) => multipartFormRequestOptions({
-            body,
-            ...options,
-            stream: body.stream ?? false,
-            __metadata: { model: body.model },
-            __security: { bearerAuth: true },
-        }, this._client)));
+    cancel(batchID, options) {
+        return this._client.post(path `/batches/${batchID}/cancel`, resolveResourceRequestOptions$14(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$13(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-/**
- * Turn audio into text or text into audio.
- */
-let Translations$1 = class Translations extends APIResource {
-    create(body, options) {
-        return this._client.post('/audio/translations', resolveResourceRequestOptions$13(options, (options) => multipartFormRequestOptions({ body, ...options, __metadata: { model: body.model }, __security: { bearerAuth: true } }, this._client)));
-    }
-};
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-class Audio extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.transcriptions = new Transcriptions(this._client);
-        this.translations = new Translations$1(this._client);
-        this.speech = new Speech(this._client);
-    }
-}
-Audio.Transcriptions = Transcriptions;
-Audio.Translations = Translations$1;
-Audio.Speech = Speech;
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$12(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -47179,105 +47450,6 @@ function normalizeRequestOptionsForQuery$x(value, queryKeys, options) {
     }));
 }
 /**
- * Create large batches of API requests to run asynchronously.
- */
-class Batches extends APIResource {
-    /**
-     * Creates and executes a batch from an uploaded file of requests
-     */
-    create(body, options) {
-        return this._client.post('/batches', resolveResourceRequestOptions$12(options, (options) => ({
-            body,
-            ...options,
-            __security: { bearerAuth: true },
-        })));
-    }
-    /**
-     * Retrieves a batch.
-     */
-    retrieve(batchID, options) {
-        return this._client.get(path `/batches/${batchID}`, resolveResourceRequestOptions$12(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
-    }
-    list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$x(query, ['after', 'limit'], options);
-        if (normalizeRequestOptionsForQueryOptions !== undefined) {
-            options = normalizeRequestOptionsForQueryOptions;
-            query = {};
-        }
-        query = query;
-        return this._client.getAPIList('/batches', (CursorPage), resolveResourceRequestOptions$12(options, (options) => ({
-            query,
-            ...options,
-            __security: { bearerAuth: true },
-        })));
-    }
-    /**
-     * Cancels an in-progress batch. The batch will be in status `cancelling` for up to
-     * 10 minutes, before changing to `cancelled`, where it will have partial results
-     * (if any) available in the output file.
-     */
-    cancel(batchID, options) {
-        return this._client.post(path `/batches/${batchID}/cancel`, resolveResourceRequestOptions$12(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
-    }
-}
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$11(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-// Recognizable options across SDK runtime versions. Keep this independent of
-// private RequestOptions fields so older handwritten runtimes still compile.
-const normalizeRequestOptionsForQueryKeys$w = new Set([
-    'method',
-    'path',
-    'query',
-    'body',
-    'headers',
-    'maxRetries',
-    'stream',
-    'timeout',
-    'httpAgent',
-    'fetchOptions',
-    'signal',
-    'idempotencyKey',
-    'defaultBaseURL',
-    '__metadata',
-    '__binaryRequest',
-    '__binaryResponse',
-    '__streamClass',
-    '__security',
-    '__synthesizeEventData',
-]);
-function normalizeRequestOptionsForQuery$w(value, queryKeys, options) {
-    if (typeof value !== 'object' || value === null)
-        return undefined;
-    // Optional never fields can still be explicitly undefined unless consumers
-    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
-    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
-    const keys = entries.map(([key]) => key);
-    const requestOnly = keys.some((key) => normalizeRequestOptionsForQueryKeys$w.has(key) && !queryKeys.includes(key));
-    if (!requestOnly)
-        return undefined;
-    // Declared query fields, including stream, must use the query argument.
-    // Mixing them with request-only options is ambiguous and could change the return type.
-    if (options !== undefined ||
-        keys.some((key) => !normalizeRequestOptionsForQueryKeys$w.has(key) || queryKeys.includes(key))) {
-        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
-    }
-    // The query position must not gain authority to change the request destination
-    // or transport. Those overrides require the explicit request options argument.
-    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
-        throw new TypeError('Pass transport overrides in the explicit request options argument.');
-    }
-    // Copy only the validated fields. Spreading value would reintroduce undefined
-    // transport overrides, and deleting them would mutate the caller's object.
-    return Object.fromEntries(entries.map(([key, descriptor]) => {
-        if ('value' in descriptor)
-            return [key, descriptor.value];
-        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
-    }));
-}
-/**
  * Build Assistants that can call models and use tools.
  */
 class Assistants extends APIResource {
@@ -47287,7 +47459,7 @@ class Assistants extends APIResource {
      * @deprecated
      */
     create(body, options) {
-        return this._client.post('/assistants', resolveResourceRequestOptions$11(options, (options) => ({
+        return this._client.post('/assistants', resolveResourceRequestOptions$13(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -47300,7 +47472,7 @@ class Assistants extends APIResource {
      * @deprecated
      */
     retrieve(assistantID, options) {
-        return this._client.get(path `/assistants/${assistantID}`, resolveResourceRequestOptions$11(options, (options) => ({
+        return this._client.get(path `/assistants/${assistantID}`, resolveResourceRequestOptions$13(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -47312,7 +47484,7 @@ class Assistants extends APIResource {
      * @deprecated
      */
     update(assistantID, body, options) {
-        return this._client.post(path `/assistants/${assistantID}`, resolveResourceRequestOptions$11(options, (options) => ({
+        return this._client.post(path `/assistants/${assistantID}`, resolveResourceRequestOptions$13(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -47320,13 +47492,13 @@ class Assistants extends APIResource {
         })));
     }
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$w(query, ['after', 'before', 'limit', 'order'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$x(query, ['after', 'before', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/assistants', (CursorPage), resolveResourceRequestOptions$11(options, (options) => ({
+        return this._client.getAPIList('/assistants', (CursorPage), resolveResourceRequestOptions$13(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -47339,7 +47511,7 @@ class Assistants extends APIResource {
      * @deprecated
      */
     delete(assistantID, options) {
-        return this._client.delete(path `/assistants/${assistantID}`, resolveResourceRequestOptions$11(options, (options) => ({
+        return this._client.delete(path `/assistants/${assistantID}`, resolveResourceRequestOptions$13(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -47497,7 +47669,7 @@ async function uploadAgentFile(client, resource, environmentID, params, options)
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$10(options, buildOptions) {
+function resolveResourceRequestOptions$12(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 let Files$3 = class Files extends APIResource {
@@ -47510,8 +47682,9 @@ let Files$3 = class Files extends APIResource {
         return uploadAgentFile(this._client, this, environmentID, params, options);
     }
     /**
-     * Copies inline bytes or a Files API file into a connected execution environment.
-     * See
+     * Copies inline bytes or a Files API file into a connected execution environment,
+     * replacing an existing regular file at the same path. Upload between turns and
+     * wait for success before starting the next turn. See
      * [environment files](https://developers.openai.com/api/docs/guides/agents-api/environments/files).
      *
      * @example
@@ -47528,7 +47701,7 @@ let Files$3 = class Files extends APIResource {
      * ```
      */
     create(environmentID, body, options) {
-        return this._client.post(path `/agents/environments/${environmentID}/files`, resolveResourceRequestOptions$10(options, (options) => ({
+        return this._client.post(path `/agents/environments/${environmentID}/files`, resolveResourceRequestOptions$12(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -47551,7 +47724,7 @@ let Files$3 = class Files extends APIResource {
      * ```
      */
     list(environmentID, query = {}, options) {
-        return this._client.getAPIList(path `/agents/environments/${environmentID}/files`, (TokenPage), resolveResourceRequestOptions$10(options, (options) => ({
+        return this._client.getAPIList(path `/agents/environments/${environmentID}/files`, (TokenPage), resolveResourceRequestOptions$12(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -47561,7 +47734,160 @@ let Files$3 = class Files extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$$(options, buildOptions) {
+function resolveResourceRequestOptions$11(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const normalizeRequestOptionsForQueryKeys$w = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function normalizeRequestOptionsForQuery$w(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => normalizeRequestOptionsForQueryKeys$w.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !normalizeRequestOptionsForQueryKeys$w.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+class Templates extends APIResource {
+    /**
+     * Creates reusable environment configuration without returning confidential setup
+     * commands or environment values. See
+     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
+     *
+     * @example
+     * ```ts
+     * const environmentTemplate =
+     *   await client.beta.agents.environments.templates.create();
+     * ```
+     */
+    create(body = {}, options) {
+        return this._client.post('/agents/environments/templates', resolveResourceRequestOptions$11(options, (options) => ({
+            body,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Retrieves reusable environment configuration without returning confidential
+     * values. See
+     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
+     *
+     * @example
+     * ```ts
+     * const environmentTemplate =
+     *   await client.beta.agents.environments.templates.retrieve(
+     *     'environment_template_id',
+     *   );
+     * ```
+     */
+    retrieve(environmentTemplateID, options) {
+        return this._client.get(path `/agents/environments/templates/${environmentTemplateID}`, resolveResourceRequestOptions$11(options, (options) => ({
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Updates reusable environment configuration without returning confidential
+     * values. See
+     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
+     *
+     * @example
+     * ```ts
+     * const environmentTemplate =
+     *   await client.beta.agents.environments.templates.update(
+     *     'environment_template_id',
+     *   );
+     * ```
+     */
+    update(environmentTemplateID, body = {}, options) {
+        return this._client.post(path `/agents/environments/templates/${environmentTemplateID}`, resolveResourceRequestOptions$11(options, (options) => ({
+            body,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$w(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/agents/environments/templates', (CursorPage), resolveResourceRequestOptions$11(options, (options) => ({
+            query,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Deletes reusable environment configuration and all confidential template inputs.
+     * See
+     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
+     *
+     * @example
+     * ```ts
+     * const environmentTemplateDeleted =
+     *   await client.beta.agents.environments.templates.delete(
+     *     'environment_template_id',
+     *   );
+     * ```
+     */
+    delete(environmentTemplateID, options) {
+        return this._client.delete(path `/agents/environments/templates/${environmentTemplateID}`, resolveResourceRequestOptions$11(options, (options) => ({
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+}
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$10(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -47616,112 +47942,38 @@ function normalizeRequestOptionsForQuery$v(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class Templates extends APIResource {
-    /**
-     * Creates reusable environment configuration without returning confidential setup
-     * commands or environment values. See
-     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
-     *
-     * @example
-     * ```ts
-     * const environmentTemplate =
-     *   await client.beta.agents.environments.templates.create();
-     * ```
-     */
-    create(body = {}, options) {
-        return this._client.post('/agents/environments/templates', resolveResourceRequestOptions$$(options, (options) => ({
-            body,
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        })));
-    }
-    /**
-     * Retrieves reusable environment configuration without returning confidential
-     * values. See
-     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
-     *
-     * @example
-     * ```ts
-     * const environmentTemplate =
-     *   await client.beta.agents.environments.templates.retrieve(
-     *     'environment_template_id',
-     *   );
-     * ```
-     */
-    retrieve(environmentTemplateID, options) {
-        return this._client.get(path `/agents/environments/templates/${environmentTemplateID}`, resolveResourceRequestOptions$$(options, (options) => ({
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        })));
-    }
-    /**
-     * Updates reusable environment configuration without returning confidential
-     * values. See
-     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
-     *
-     * @example
-     * ```ts
-     * const environmentTemplate =
-     *   await client.beta.agents.environments.templates.update(
-     *     'environment_template_id',
-     *   );
-     * ```
-     */
-    update(environmentTemplateID, body = {}, options) {
-        return this._client.post(path `/agents/environments/templates/${environmentTemplateID}`, resolveResourceRequestOptions$$(options, (options) => ({
-            body,
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        })));
-    }
-    list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$v(query, ['after', 'limit', 'order'], options);
-        if (normalizeRequestOptionsForQueryOptions !== undefined) {
-            options = normalizeRequestOptionsForQueryOptions;
-            query = {};
-        }
-        query = query;
-        return this._client.getAPIList('/agents/environments/templates', (CursorPage), resolveResourceRequestOptions$$(options, (options) => ({
-            query,
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        })));
-    }
-    /**
-     * Deletes reusable environment configuration and all confidential template inputs.
-     * See
-     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
-     *
-     * @example
-     * ```ts
-     * const environmentTemplateDeleted =
-     *   await client.beta.agents.environments.templates.delete(
-     *     'environment_template_id',
-     *   );
-     * ```
-     */
-    delete(environmentTemplateID, options) {
-        return this._client.delete(path `/agents/environments/templates/${environmentTemplateID}`, resolveResourceRequestOptions$$(options, (options) => ({
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        })));
-    }
-}
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$_(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
 class Environments extends APIResource {
     constructor() {
         super(...arguments);
         this.files = new Files$3(this._client);
         this.templates = new Templates(this._client);
+    }
+    /**
+     * Creates an OpenAI-hosted environment before creating a session. Requires access
+     * to the prewarming beta.
+     *
+     * @example
+     * ```ts
+     * const environmentInfo =
+     *   await client.beta.agents.environments.create({
+     *     environment: { type: 'openai_hosted' },
+     *   });
+     * ```
+     */
+    create(params, options) {
+        const { 'Idempotency-Key': idempotencyKey, ...body } = params;
+        return this._client.post('/agents/environments', resolveResourceRequestOptions$10(options, (options) => ({
+            body,
+            ...options,
+            headers: buildHeaders([
+                {
+                    'OpenAI-Beta': 'agents=v1',
+                    ...(idempotencyKey != null ? { 'Idempotency-Key': idempotencyKey } : undefined),
+                },
+                options?.headers,
+            ]),
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Retrieves an execution environment's connection status and safe installed
@@ -47737,11 +47989,33 @@ class Environments extends APIResource {
      * ```
      */
     retrieve(environmentID, options) {
-        return this._client.get(path `/agents/environments/${environmentID}`, resolveResourceRequestOptions$_(options, (options) => ({
+        return this._client.get(path `/agents/environments/${environmentID}`, resolveResourceRequestOptions$10(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
         })));
+    }
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$v(query, ['after', 'limit', 'order', 'type'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/agents/environments', EnvironmentInfosPage, resolveResourceRequestOptions$10(options, (options) => ({
+            query,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+}
+class EnvironmentInfosPage extends CursorPage {
+    constructor(client, response, body, options) {
+        super(client, response, body, options);
+        this.object = body.object;
+        this.first_id = body.first_id;
+        this.last_id = body.last_id;
     }
 }
 Environments.Files = Files$3;
@@ -47803,6 +48077,205 @@ class TurnState {
     }
 }
 _TurnState_turnID = new WeakMap(), _TurnState_turnEnded = new WeakMap(), _TurnState_eventIDs = new WeakMap(), _TurnState_calls = new WeakMap();
+
+/**
+ * Recognizes supported content blocks without confusing JSON business data with content.
+ * @internal
+ */
+function isInputContent(value) {
+    if (!isObj(value)) {
+        return false;
+    }
+    const content = value;
+    let field;
+    if (content['type'] === 'input_text') {
+        field = 'text';
+    }
+    else if (content['type'] === 'input_image') {
+        field = 'image_url';
+    }
+    else {
+        return false;
+    }
+    return hasOwn(content, 'type') && hasOwn(content, field) && typeof content[field] === 'string';
+}
+
+/** @internal */
+const toolStages = Symbol.for('openai.beta.agents.toolStages');
+
+var _AgentToolDispatcher_instances, _AgentToolDispatcher_handlers, _AgentToolDispatcher_options, _AgentToolDispatcher_sessions, _AgentToolDispatcher_controller, _AgentToolDispatcher_onToolError, _AgentToolDispatcher_result, _AgentToolDispatcher_checkAbort, _AgentToolDispatcher_abortError, _AgentToolDispatcher_wait, _AgentToolDispatcher_submit;
+function normalizedOutput(value) {
+    if (value === null) {
+        return null;
+    }
+    if (typeof value === 'string' || (Array.isArray(value) && value.every(isInputContent))) {
+        return value;
+    }
+    throw new OpenAIError('Tool output must be text, content, a JSON object, or null');
+}
+// oxlint-disable-next-line anti-slop/no-object-parameters -- The public AgentToolOutput contract accepts arbitrary JSON-serializable object results.
+function toolResult(call, value) {
+    const output = isObj(value) ? JSON.stringify(value) : value;
+    // Detect unserializable callback results inside the redacted failure boundary.
+    const serialized = JSON.stringify(output);
+    if (serialized === undefined) {
+        throw new OpenAIError('Tool output must be JSON serializable');
+    }
+    return {
+        type: 'agent.session.input.tool_result',
+        turn_id: call.turn_id,
+        call_id: call.call_id,
+        success: true,
+        output: normalizedOutput(typeof output === 'string' ? output : JSON.parse(serialized)),
+    };
+}
+/** Shared local function dispatch for creation and follow-up streams. @internal */
+class AgentToolDispatcher {
+    constructor(sessions, handlers, controller, options, onToolError) {
+        _AgentToolDispatcher_instances.add(this);
+        _AgentToolDispatcher_handlers.set(this, void 0);
+        _AgentToolDispatcher_options.set(this, void 0);
+        _AgentToolDispatcher_sessions.set(this, void 0);
+        _AgentToolDispatcher_controller.set(this, void 0);
+        _AgentToolDispatcher_onToolError.set(this, void 0);
+        __classPrivateFieldSet(this, _AgentToolDispatcher_sessions, sessions);
+        __classPrivateFieldSet(this, _AgentToolDispatcher_controller, controller);
+        __classPrivateFieldSet(this, _AgentToolDispatcher_onToolError, onToolError);
+        __classPrivateFieldSet(this, _AgentToolDispatcher_handlers, new Map(Object.entries(handlers)));
+        const headers = buildHeaders([options?.headers]);
+        headers.values.delete('idempotency-key');
+        headers.nulls.delete('idempotency-key');
+        const { idempotencyKey: _key, ...rest } = options ?? {};
+        __classPrivateFieldSet(this, _AgentToolDispatcher_options, { ...rest, headers, signal: controller.signal });
+    }
+    canHandle(name) {
+        return typeof __classPrivateFieldGet(this, _AgentToolDispatcher_handlers, "f").get(name) === 'function';
+    }
+    /** Capture routing and arguments before the caller can mutate the yielded event. */
+    prepare(call, sessionID) {
+        const handler = call && __classPrivateFieldGet(this, _AgentToolDispatcher_handlers, "f").get(call.name);
+        if (!call || typeof handler !== 'function') {
+            return;
+        }
+        if (!sessionID) {
+            throw new OpenAIError('Tool call received before the session creation event');
+        }
+        const snapshot = structuredClone(call);
+        return async () => {
+            __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+            const result = await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_result).call(this, snapshot, handler, sessionID);
+            __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+            await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_submit).call(this, sessionID, result);
+        };
+    }
+}
+_AgentToolDispatcher_handlers = new WeakMap(), _AgentToolDispatcher_options = new WeakMap(), _AgentToolDispatcher_sessions = new WeakMap(), _AgentToolDispatcher_controller = new WeakMap(), _AgentToolDispatcher_onToolError = new WeakMap(), _AgentToolDispatcher_instances = new WeakSet(), _AgentToolDispatcher_result = async function _AgentToolDispatcher_result(call, handler, sessionID) {
+    let stage = 'arguments';
+    try {
+        const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
+        if (!isObj(args)) {
+            throw new OpenAIError('Function arguments must be a JSON object');
+        }
+        stage = 'execution';
+        // SAFETY: Arguments were parsed as JSON and checked to be a non-null non-array object before invoking the handler.
+        const arguments_ = args;
+        const output = await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_wait).call(this, () => __classPrivateFieldGet(this, _AgentToolDispatcher_onToolError, "f") && handler[toolStages]
+            ? handler(arguments_, (value) => {
+                stage = value;
+            })
+            : handler(arguments_));
+        stage = 'output';
+        return toolResult(call, output);
+    }
+    catch (error) {
+        __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+        if (__classPrivateFieldGet(this, _AgentToolDispatcher_onToolError, "f")) {
+            const failure = Object.freeze({
+                error,
+                stage,
+                tool_name: call.name,
+                session_id: sessionID,
+                turn_id: call.turn_id,
+                call_id: call.call_id,
+            });
+            try {
+                await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_wait).call(this, () => __classPrivateFieldGet(this, _AgentToolDispatcher_onToolError, "f")?.call(this, failure));
+            }
+            catch {
+                // Observers must not prevent the original sanitized tool failure from being submitted.
+                __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+            }
+        }
+        return {
+            type: 'agent.session.input.tool_result',
+            turn_id: call.turn_id,
+            call_id: call.call_id,
+            success: false,
+            error: 'Tool handler failed.',
+        };
+    }
+}, _AgentToolDispatcher_checkAbort = function _AgentToolDispatcher_checkAbort() {
+    if (__classPrivateFieldGet(this, _AgentToolDispatcher_controller, "f").signal.aborted) {
+        throw __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_abortError).call(this);
+    }
+}, _AgentToolDispatcher_abortError = function _AgentToolDispatcher_abortError() {
+    const error = new APIUserAbortError();
+    Object.defineProperty(error, 'cause', {
+        value: __classPrivateFieldGet(this, _AgentToolDispatcher_controller, "f").signal.reason,
+        writable: true,
+        configurable: true,
+    });
+    return error;
+}, _AgentToolDispatcher_wait = async function _AgentToolDispatcher_wait(action) {
+    let onAbort;
+    // oxlint-disable-next-line promise/avoid-new -- Bridge the caller's AbortSignal while a handler or registration delay is pending.
+    const aborted = new Promise((_resolve, reject) => {
+        onAbort = () => reject(__classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_abortError).call(this));
+        __classPrivateFieldGet(this, _AgentToolDispatcher_controller, "f").signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+        __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+        // Capture synchronous throws before racing cancellation, so both promises
+        // always have rejection handlers even if the callback aborts and throws.
+        const invoke = async () => await action();
+        return await Promise.race([invoke(), aborted]);
+    }
+    finally {
+        if (onAbort) {
+            __classPrivateFieldGet(this, _AgentToolDispatcher_controller, "f").signal.removeEventListener('abort', onAbort);
+        }
+    }
+}, _AgentToolDispatcher_submit = async function _AgentToolDispatcher_submit(sessionID, result, key = uuid4(), attempt = 0) {
+    __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+    try {
+        await __classPrivateFieldGet(this, _AgentToolDispatcher_sessions, "f").events.create(sessionID, { events: [result], 'Idempotency-Key': key }, __classPrivateFieldGet(this, _AgentToolDispatcher_options, "f"));
+    }
+    catch (error) {
+        const delay = [100, 300, 600][attempt];
+        if (delay === undefined ||
+            !(error instanceof BadRequestError) ||
+            error.code !== 'invalid_request_error' ||
+            !error.error ||
+            !('message' in error.error) ||
+            error.error.message !== `Unknown pending tool call: ${result.call_id}`) {
+            throw error;
+        }
+        let timer;
+        try {
+            await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_wait).call(this, () => 
+            // oxlint-disable-next-line promise/avoid-new -- Own the registration timer so cancellation clears it promptly.
+            new Promise((resolve) => {
+                timer = setTimeout(resolve, delay);
+            }));
+        }
+        finally {
+            if (timer !== undefined) {
+                clearTimeout(timer);
+            }
+        }
+        await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_submit).call(this, sessionID, result, key, attempt + 1);
+    }
+};
 
 /** Joins output_text blocks in content order, without filtering phase, fetching, or mutating the message. */
 function outputText(message) {
@@ -48169,54 +48642,7 @@ _ResultCollection_iterator = new WeakMap(), _ResultCollection_ended = new WeakMa
     }
 };
 
-/**
- * Recognizes supported content blocks without confusing JSON business data with content.
- * @internal
- */
-function isInputContent(value) {
-    if (!isObj(value)) {
-        return false;
-    }
-    const content = value;
-    let field;
-    if (content['type'] === 'input_text') {
-        field = 'text';
-    }
-    else if (content['type'] === 'input_image') {
-        field = 'image_url';
-    }
-    else {
-        return false;
-    }
-    return hasOwn(content, 'type') && hasOwn(content, field) && typeof content[field] === 'string';
-}
-
-var _AgentSessionStream_instances, _AgentSessionStream_consumed, _AgentSessionStream_format, _AgentSessionStream_parsedResult, _AgentSessionStream_collection, _AgentSessionStream_stream, _AgentSessionStream_response, _AgentSessionStream_reading, _AgentSessionStream_sessions, _AgentSessionStream_sessionID, _AgentSessionStream_input, _AgentSessionStream_handlers, _AgentSessionStream_inputKey, _AgentSessionStream_options, _AgentSessionStream_iterate, _AgentSessionStream_result, _AgentSessionStream_checkAbort, _AgentSessionStream_abortError, _AgentSessionStream_wait, _AgentSessionStream_submit;
-function normalizedOutput(value) {
-    if (value === null) {
-        return null;
-    }
-    if (typeof value === 'string' || (Array.isArray(value) && value.every(isInputContent))) {
-        return value;
-    }
-    throw new OpenAIError('Tool output must be text, content, a JSON object, or null');
-}
-// oxlint-disable-next-line anti-slop/no-object-parameters -- The public AgentToolOutput contract accepts arbitrary JSON-serializable object results.
-function toolResult(call, value) {
-    const output = isObj(value) ? JSON.stringify(value) : value;
-    // Detect unserializable callback results inside the redacted failure boundary.
-    const serialized = JSON.stringify(output);
-    if (serialized === undefined) {
-        throw new OpenAIError('Tool output must be JSON serializable');
-    }
-    return {
-        type: 'agent.session.input.tool_result',
-        turn_id: call.turn_id,
-        call_id: call.call_id,
-        success: true,
-        output: normalizedOutput(typeof output === 'string' ? output : JSON.parse(serialized)),
-    };
-}
+var _AgentSessionStream_instances, _AgentSessionStream_consumed, _AgentSessionStream_format, _AgentSessionStream_parsedResult, _AgentSessionStream_collection, _AgentSessionStream_stream, _AgentSessionStream_response, _AgentSessionStream_reading, _AgentSessionStream_sessions, _AgentSessionStream_sessionID, _AgentSessionStream_input, _AgentSessionStream_dispatcher, _AgentSessionStream_inputKey, _AgentSessionStream_options, _AgentSessionStream_iterate, _AgentSessionStream_checkAbort, _AgentSessionStream_abortError;
 async function cancelBody(response) {
     try {
         await response?.body?.cancel();
@@ -48254,7 +48680,7 @@ class AgentSessionStream {
         _AgentSessionStream_sessions.set(this, void 0);
         _AgentSessionStream_sessionID.set(this, void 0);
         _AgentSessionStream_input.set(this, void 0);
-        _AgentSessionStream_handlers.set(this, void 0);
+        _AgentSessionStream_dispatcher.set(this, void 0);
         _AgentSessionStream_inputKey.set(this, void 0);
         _AgentSessionStream_options.set(this, void 0);
         const input = typeof params.input === 'string'
@@ -48270,7 +48696,6 @@ class AgentSessionStream {
         __classPrivateFieldSet(this, _AgentSessionStream_sessions, sessions);
         __classPrivateFieldSet(this, _AgentSessionStream_sessionID, sessionID);
         __classPrivateFieldSet(this, _AgentSessionStream_input, { type: 'agent.session.input.message', input });
-        __classPrivateFieldSet(this, _AgentSessionStream_handlers, new Map(Object.entries(params.toolHandlers ?? {})));
         const headers = buildHeaders([options?.headers]);
         __classPrivateFieldSet(this, _AgentSessionStream_inputKey, headers.nulls.has('idempotency-key')
             ? undefined
@@ -48282,7 +48707,8 @@ class AgentSessionStream {
         headers.nulls.delete('idempotency-key');
         const { idempotencyKey: _key, ...rest } = options ?? {};
         __classPrivateFieldSet(this, _AgentSessionStream_options, { ...rest, headers });
-        __classPrivateFieldSet(this, _AgentSessionStream_collection, new ResultCollection(() => __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_iterate).call(this), (name) => __classPrivateFieldGet(this, _AgentSessionStream_handlers, "f").has(name), sessionID));
+        __classPrivateFieldSet(this, _AgentSessionStream_dispatcher, new AgentToolDispatcher(sessions, params.toolHandlers ?? {}, this.controller, __classPrivateFieldGet(this, _AgentSessionStream_options, "f"), params.onToolError));
+        __classPrivateFieldSet(this, _AgentSessionStream_collection, new ResultCollection(() => __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_iterate).call(this), (name) => __classPrivateFieldGet(this, _AgentSessionStream_dispatcher, "f").canHandle(name), sessionID));
     }
     /** Closes local requests without cancelling the turn; an optional reason becomes the abort error's cause. */
     abort(reason) {
@@ -48293,7 +48719,7 @@ class AgentSessionStream {
         }
     }
     /** Starts iteration once; use for await to ensure early exits close the connection. */
-    [(_AgentSessionStream_consumed = new WeakMap(), _AgentSessionStream_format = new WeakMap(), _AgentSessionStream_parsedResult = new WeakMap(), _AgentSessionStream_collection = new WeakMap(), _AgentSessionStream_stream = new WeakMap(), _AgentSessionStream_response = new WeakMap(), _AgentSessionStream_reading = new WeakMap(), _AgentSessionStream_sessions = new WeakMap(), _AgentSessionStream_sessionID = new WeakMap(), _AgentSessionStream_input = new WeakMap(), _AgentSessionStream_handlers = new WeakMap(), _AgentSessionStream_inputKey = new WeakMap(), _AgentSessionStream_options = new WeakMap(), _AgentSessionStream_instances = new WeakSet(), Symbol.asyncIterator)]() {
+    [(_AgentSessionStream_consumed = new WeakMap(), _AgentSessionStream_format = new WeakMap(), _AgentSessionStream_parsedResult = new WeakMap(), _AgentSessionStream_collection = new WeakMap(), _AgentSessionStream_stream = new WeakMap(), _AgentSessionStream_response = new WeakMap(), _AgentSessionStream_reading = new WeakMap(), _AgentSessionStream_sessions = new WeakMap(), _AgentSessionStream_sessionID = new WeakMap(), _AgentSessionStream_input = new WeakMap(), _AgentSessionStream_dispatcher = new WeakMap(), _AgentSessionStream_inputKey = new WeakMap(), _AgentSessionStream_options = new WeakMap(), _AgentSessionStream_instances = new WeakSet(), Symbol.asyncIterator)]() {
         if (__classPrivateFieldGet(this, _AgentSessionStream_consumed, "f")) {
             throw new OpenAIError('An AgentSessionStream can only be consumed once');
         }
@@ -48346,10 +48772,7 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
                 continue;
             }
             const terminal = state.terminal(event);
-            const pendingCall = state.call(event);
-            const handler = pendingCall && __classPrivateFieldGet(this, _AgentSessionStream_handlers, "f").get(pendingCall.name);
-            // Freeze dispatch identity and arguments before exposing the original event.
-            const call = pendingCall && handler ? structuredClone(pendingCall) : undefined;
+            const dispatch = __classPrivateFieldGet(this, _AgentSessionStream_dispatcher, "f").prepare(state.call(event), __classPrivateFieldGet(this, _AgentSessionStream_sessionID, "f"));
             if (terminal) {
                 __classPrivateFieldGet(this, _AgentSessionStream_stream, "f").controller.abort();
             }
@@ -48358,12 +48781,7 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
                 return;
             }
             __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-            if (!call || !handler) {
-                continue;
-            }
-            const result = await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_result).call(this, call, handler);
-            __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-            await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_submit).call(this, result, options);
+            await dispatch?.();
         }
         __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
         throw new OpenAIError('Session event stream ended before the turn reached idle or failed');
@@ -48372,25 +48790,6 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
         externalSignal?.removeEventListener('abort', abort);
         this.controller.signal.removeEventListener('abort', abort);
         this.abort();
-    }
-}, _AgentSessionStream_result = async function _AgentSessionStream_result(call, handler) {
-    try {
-        const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
-        if (!isObj(args)) {
-            throw new OpenAIError('Function arguments must be a JSON object');
-        }
-        // SAFETY: Arguments were parsed as JSON and checked to be a non-null non-array object before invoking the handler.
-        return toolResult(call, await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_wait).call(this, () => handler(args)));
-    }
-    catch {
-        __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-        return {
-            type: 'agent.session.input.tool_result',
-            turn_id: call.turn_id,
-            call_id: call.call_id,
-            success: false,
-            error: 'Tool handler failed.',
-        };
     }
 }, _AgentSessionStream_checkAbort = function _AgentSessionStream_checkAbort() {
     if (this.controller.signal.aborted) {
@@ -48404,64 +48803,41 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
         configurable: true,
     });
     return error;
-}, _AgentSessionStream_wait = async function _AgentSessionStream_wait(action) {
-    let onAbort;
-    // oxlint-disable-next-line promise/avoid-new -- Bridge the caller's AbortSignal while a handler or registration delay is pending.
-    const aborted = new Promise((_resolve, reject) => {
-        onAbort = () => reject(__classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_abortError).call(this));
-        this.controller.signal.addEventListener('abort', onAbort, { once: true });
-    });
-    try {
-        __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-        // Capture synchronous throws before racing cancellation, so both promises
-        // always have rejection handlers even if the callback aborts and throws.
-        const invoke = async () => await action();
-        return await Promise.race([invoke(), aborted]);
-    }
-    finally {
-        if (onAbort) {
-            this.controller.signal.removeEventListener('abort', onAbort);
-        }
-    }
-}, _AgentSessionStream_submit = async function _AgentSessionStream_submit(result, options, key = uuid4(), attempt = 0) {
-    __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-    try {
-        await __classPrivateFieldGet(this, _AgentSessionStream_sessions, "f").events.create(__classPrivateFieldGet(this, _AgentSessionStream_sessionID, "f"), { events: [result], 'Idempotency-Key': key }, options);
-    }
-    catch (error) {
-        const delay = [100, 300, 600][attempt];
-        if (delay === undefined ||
-            !(error instanceof BadRequestError) ||
-            error.code !== 'invalid_request_error' ||
-            !error.error ||
-            !('message' in error.error) ||
-            error.error.message !== `Unknown pending tool call: ${result.call_id}`) {
-            throw error;
-        }
-        let timer;
-        try {
-            await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_wait).call(this, () => 
-            // oxlint-disable-next-line promise/avoid-new -- Own the registration timer so cancellation clears it promptly.
-            new Promise((resolve) => {
-                timer = setTimeout(resolve, delay);
-            }));
-        }
-        finally {
-            if (timer !== undefined) {
-                clearTimeout(timer);
-            }
-        }
-        await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_submit).call(this, result, options, key, attempt + 1);
-    }
 };
 
+async function* dispatchCreationTools(source, dispatcher, signal) {
+    const state = new TurnState();
+    let sessionID;
+    for await (const event of { [Symbol.asyncIterator]: source }) {
+        if (event.type === 'agent.session.created') {
+            sessionID ?? (sessionID = event.session.id);
+        }
+        const dispatch = state.accept(event) ? dispatcher.prepare(state.call(event), sessionID) : undefined;
+        yield event;
+        if (signal.aborted) {
+            return;
+        }
+        try {
+            await dispatch?.();
+        }
+        catch (error) {
+            if (signal.aborted && error instanceof APIUserAbortError) {
+                return;
+            }
+            throw error;
+        }
+    }
+}
 /** Add beta result collection without replacing custom stream instances.
  * @internal
  */
-function withAgentTurnResult(stream, format) {
+function withAgentTurnResult(stream, format, tools) {
     let collection;
     stream.__betaTransformIterator((source) => {
-        collection = new ResultCollection(source, undefined, undefined, stream.controller.signal);
+        // A tool result has its own POST endpoint, independent of creation overrides.
+        const { path: _path, method: _method, stream: _stream, ...options } = tools?.options ?? {};
+        const dispatcher = tools && new AgentToolDispatcher(tools.sessions, tools.handlers, stream.controller, options);
+        collection = new ResultCollection(dispatcher ? () => dispatchCreationTools(source, dispatcher, stream.controller.signal) : source, dispatcher ? (name) => dispatcher.canHandle(name) : undefined, undefined, stream.controller.signal);
         return () => collection.iterate();
     });
     let parsed;
@@ -48473,6 +48849,43 @@ function withAgentTurnResult(stream, format) {
         },
     });
     return result;
+}
+/** Remove local callbacks without changing ordinary creation requests. @internal */
+function captureCreationTools(body, options) {
+    const descriptor = Object.getOwnPropertyDescriptor(body, 'toolHandlers');
+    if (!descriptor) {
+        return { body, options };
+    }
+    const handlers = body.toolHandlers;
+    if (handlers === undefined && 'value' in descriptor) {
+        return { body, options };
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(body);
+    delete descriptors.toolHandlers;
+    const capturedOptions = { ...options };
+    if ('toJSON' in body || capturedOptions.body !== undefined) {
+        throw new OpenAIError('Creation tool handlers cannot customize request body serialization');
+    }
+    if (handlers === undefined) {
+        // SAFETY: Preserve request fields while removing the accessor so serialization cannot evaluate it again.
+        return {
+            body: Object.create(Object.getPrototypeOf(body), descriptors),
+            options: capturedOptions,
+        };
+    }
+    const { stream } = body;
+    if (stream !== true) {
+        throw new OpenAIError('toolHandlers requires stream: true');
+    }
+    capturedOptions.headers = buildHeaders([capturedOptions.headers]);
+    descriptors.stream = { value: stream, enumerable: true, configurable: true, writable: true };
+    // SAFETY: Preserve request fields, omitting callbacks and fixing the validated streaming mode.
+    const request = Object.create(Object.getPrototypeOf(body), descriptors);
+    return {
+        body: request,
+        options: capturedOptions,
+        handlers: handlers && Object.fromEntries(Object.entries(handlers)),
+    };
 }
 
 /** Retain server cursor metadata for legacy Agents items with nullable IDs.
@@ -48563,7 +48976,7 @@ class AgentResultArtifacts {
 _AgentResultArtifacts_resource = new WeakMap(), _AgentResultArtifacts_sessionID = new WeakMap(), _AgentResultArtifacts_turnID = new WeakMap();
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$Z(options, buildOptions) {
+function resolveResourceRequestOptions$$(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -48638,7 +49051,7 @@ class Artifacts extends APIResource {
      */
     retrieve(artifactID, params, options) {
         const { session_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/artifacts/${artifactID}`, resolveResourceRequestOptions$Z(options, (options) => ({
+        return this._client.get(path `/agents/sessions/${session_id}/artifacts/${artifactID}`, resolveResourceRequestOptions$$(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -48651,7 +49064,7 @@ class Artifacts extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/artifacts`, (CursorPage), resolveResourceRequestOptions$Z(options, (options) => ({
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/artifacts`, (CursorPage), resolveResourceRequestOptions$$(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -48674,7 +49087,7 @@ class Artifacts extends APIResource {
      */
     delete(artifactID, params, options) {
         const { session_id } = params;
-        return this._client.delete(path `/agents/sessions/${session_id}/artifacts/${artifactID}`, resolveResourceRequestOptions$Z(options, (options) => ({
+        return this._client.delete(path `/agents/sessions/${session_id}/artifacts/${artifactID}`, resolveResourceRequestOptions$$(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -48699,7 +49112,7 @@ class Artifacts extends APIResource {
      */
     content(artifactID, params, options) {
         const { session_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/artifacts/${artifactID}/content`, resolveResourceRequestOptions$Z(options, (options) => ({
+        return this._client.get(path `/agents/sessions/${session_id}/artifacts/${artifactID}/content`, resolveResourceRequestOptions$$(options, (options) => ({
             ...options,
             headers: buildHeaders([
                 { 'OpenAI-Beta': 'agents=v1', Accept: 'application/octet-stream' },
@@ -48712,7 +49125,7 @@ class Artifacts extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$Y(options, buildOptions) {
+function resolveResourceRequestOptions$_(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 class Events extends APIResource {
@@ -48750,7 +49163,7 @@ class Events extends APIResource {
      */
     create(sessionID, params, options) {
         const { 'Idempotency-Key': idempotencyKey, ...body } = params;
-        return this._client.post(path `/agents/sessions/${sessionID}/events`, resolveResourceRequestOptions$Y(options, (options) => ({
+        return this._client.post(path `/agents/sessions/${sessionID}/events`, resolveResourceRequestOptions$_(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([
@@ -48777,7 +49190,7 @@ class Events extends APIResource {
      * ```
      */
     stream(sessionID, options) {
-        return this._client.get(path `/agents/sessions/${sessionID}/events`, resolveResourceRequestOptions$Y(options, (options) => ({
+        return this._client.get(path `/agents/sessions/${sessionID}/events`, resolveResourceRequestOptions$_(options, (options) => ({
             ...options,
             headers: buildHeaders([
                 { 'OpenAI-Beta': 'agents=v1', Accept: 'text/event-stream' },
@@ -48790,7 +49203,7 @@ class Events extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$X(options, buildOptions) {
+function resolveResourceRequestOptions$Z(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -48845,7 +49258,7 @@ function normalizeRequestOptionsForQuery$t(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Items$3 = class Items extends APIResource {
+let Items$4 = class Items extends APIResource {
     list(sessionID, query = {}, options) {
         const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$t(query, ['after', 'limit', 'order'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
@@ -48853,7 +49266,7 @@ let Items$3 = class Items extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/items`, (CursorPage), resolveResourceRequestOptions$X(options, (options) => ({
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/items`, (CursorPage), resolveResourceRequestOptions$Z(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -48863,7 +49276,7 @@ let Items$3 = class Items extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$W(options, buildOptions) {
+function resolveResourceRequestOptions$Y(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -48926,7 +49339,7 @@ class Traces extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/traces`, (CursorPage), resolveResourceRequestOptions$W(options, (options) => ({
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/traces`, (CursorPage), resolveResourceRequestOptions$Y(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -48936,7 +49349,129 @@ class Traces extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$X(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+let Items$3 = class Items extends APIResource {
+    /**
+     * Lists this subagent's own items across all of its turns. See
+     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const agentSessionItem of client.beta.agents.sessions.subagents.items.list(
+     *   'subagent_id',
+     *   { session_id: 'session_id' },
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    list(subagentID, params, options) {
+        const { session_id, ...query } = params;
+        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagentID}/items`, (CursorPage), resolveResourceRequestOptions$X(options, (options) => ({
+            query,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+};
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$W(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+let Items$2 = class Items extends APIResource {
+    /**
+     * Lists items belonging to one turn of this subagent. See
+     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const agentSessionItem of client.beta.agents.sessions.subagents.turns.items.list(
+     *   'turn_id',
+     *   { session_id: 'session_id', subagent_id: 'subagent_id' },
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    list(turnID, params, options) {
+        const { session_id, subagent_id, ...query } = params;
+        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagent_id}/turns/${turnID}/items`, (CursorPage), resolveResourceRequestOptions$W(options, (options) => ({
+            query,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+};
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$V(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+let Turns$1 = class Turns extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.items = new Items$2(this._client);
+    }
+    /**
+     * Retrieves a turn belonging to this subagent. See
+     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
+     *
+     * @example
+     * ```ts
+     * const turn =
+     *   await client.beta.agents.sessions.subagents.turns.retrieve(
+     *     'turn_id',
+     *     {
+     *       session_id: 'session_id',
+     *       subagent_id: 'subagent_id',
+     *     },
+     *   );
+     * ```
+     */
+    retrieve(turnID, params, options) {
+        const { session_id, subagent_id } = params;
+        return this._client.get(path `/agents/sessions/${session_id}/subagents/${subagent_id}/turns/${turnID}`, resolveResourceRequestOptions$V(options, (options) => ({
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Lists all turns of this subagent, including turns after a resume. See
+     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
+     *
+     * @example
+     * ```ts
+     * // Automatically fetches more pages as needed.
+     * for await (const turn of client.beta.agents.sessions.subagents.turns.list(
+     *   'subagent_id',
+     *   { session_id: 'session_id' },
+     * )) {
+     *   // ...
+     * }
+     * ```
+     */
+    list(subagentID, params, options) {
+        const { session_id, ...query } = params;
+        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagentID}/turns`, (CursorPage), resolveResourceRequestOptions$V(options, (options) => ({
+            query,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+};
+Turns$1.Items = Items$2;
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$U(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -48991,24 +49526,28 @@ function normalizeRequestOptionsForQuery$r(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-let Turns$1 = class Turns extends APIResource {
+class Subagents extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.items = new Items$3(this._client);
+        this.turns = new Turns$1(this._client);
+    }
     /**
-     * Retrieves a turn's current status, timestamps, usage, and error. Returns 404 if
-     * the turn does not belong to the session. See
-     * [session turns](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage#inspect-session-turns).
+     * Retrieves a subagent belonging to this session. See
+     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
      *
      * @example
      * ```ts
-     * const turn =
-     *   await client.beta.agents.sessions.turns.retrieve(
-     *     'turn_id',
+     * const subagent =
+     *   await client.beta.agents.sessions.subagents.retrieve(
+     *     'subagent_id',
      *     { session_id: 'session_id' },
      *   );
      * ```
      */
-    retrieve(turnID, params, options) {
+    retrieve(subagentID, params, options) {
         const { session_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/turns/${turnID}`, resolveResourceRequestOptions$V(options, (options) => ({
+        return this._client.get(path `/agents/sessions/${session_id}/subagents/${subagentID}`, resolveResourceRequestOptions$U(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49021,45 +49560,16 @@ let Turns$1 = class Turns extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/turns`, (CursorPage), resolveResourceRequestOptions$V(options, (options) => ({
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/subagents`, (CursorPage), resolveResourceRequestOptions$U(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
         })));
     }
-};
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$U(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
 }
-let Items$2 = class Items extends APIResource {
-    /**
-     * Lists this subagent's own items across all of its turns. See
-     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const agentSessionItem of client.beta.agents.sessions.subagents.items.list(
-     *   'subagent_id',
-     *   { session_id: 'session_id' },
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    list(subagentID, params, options) {
-        const { session_id, ...query } = params;
-        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagentID}/items`, (CursorPage), resolveResourceRequestOptions$U(options, (options) => ({
-            query,
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        })));
-    }
-};
+Subagents.Items = Items$3;
+Subagents.Turns = Turns$1;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$T(options, buildOptions) {
@@ -49067,23 +49577,24 @@ function resolveResourceRequestOptions$T(options, buildOptions) {
 }
 let Items$1 = class Items extends APIResource {
     /**
-     * Lists items belonging to one turn of this subagent. See
-     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
+     * Lists items belonging to one root-agent turn, including its interactions with
+     * subagents. See
+     * [inspecting agent output](https://developers.openai.com/api/docs/guides/agents-api/observability).
      *
      * @example
      * ```ts
      * // Automatically fetches more pages as needed.
-     * for await (const agentSessionItem of client.beta.agents.sessions.subagents.turns.items.list(
+     * for await (const agentSessionItem of client.beta.agents.sessions.turns.items.list(
      *   'turn_id',
-     *   { session_id: 'session_id', subagent_id: 'subagent_id' },
+     *   { session_id: 'session_id' },
      * )) {
      *   // ...
      * }
      * ```
      */
     list(turnID, params, options) {
-        const { session_id, subagent_id, ...query } = params;
-        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagent_id}/turns/${turnID}/items`, (CursorPage), resolveResourceRequestOptions$T(options, (options) => ({
+        const { session_id, ...query } = params;
+        return this._client.getAPIList(path `/agents/sessions/${session_id}/turns/${turnID}/items`, (ConversationCursorPage), resolveResourceRequestOptions$T(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49094,66 +49605,6 @@ let Items$1 = class Items extends APIResource {
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 function resolveResourceRequestOptions$S(options, buildOptions) {
-    return Promise.resolve(options).then(buildOptions);
-}
-class Turns extends APIResource {
-    constructor() {
-        super(...arguments);
-        this.items = new Items$1(this._client);
-    }
-    /**
-     * Retrieves a turn belonging to this subagent. See
-     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
-     *
-     * @example
-     * ```ts
-     * const turn =
-     *   await client.beta.agents.sessions.subagents.turns.retrieve(
-     *     'turn_id',
-     *     {
-     *       session_id: 'session_id',
-     *       subagent_id: 'subagent_id',
-     *     },
-     *   );
-     * ```
-     */
-    retrieve(turnID, params, options) {
-        const { session_id, subagent_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/subagents/${subagent_id}/turns/${turnID}`, resolveResourceRequestOptions$S(options, (options) => ({
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        })));
-    }
-    /**
-     * Lists all turns of this subagent, including turns after a resume. See
-     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const turn of client.beta.agents.sessions.subagents.turns.list(
-     *   'subagent_id',
-     *   { session_id: 'session_id' },
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    list(subagentID, params, options) {
-        const { session_id, ...query } = params;
-        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagentID}/turns`, (CursorPage), resolveResourceRequestOptions$S(options, (options) => ({
-            query,
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        })));
-    }
-}
-Turns.Items = Items$1;
-
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$R(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -49208,28 +49659,28 @@ function normalizeRequestOptionsForQuery$q(value, queryKeys, options) {
         return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
     }));
 }
-class Subagents extends APIResource {
+class Turns extends APIResource {
     constructor() {
         super(...arguments);
-        this.items = new Items$2(this._client);
-        this.turns = new Turns(this._client);
+        this.items = new Items$1(this._client);
     }
     /**
-     * Retrieves a subagent belonging to this session. See
-     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
+     * Retrieves a turn's current status, timestamps, usage, and error. Returns 404 if
+     * the turn does not belong to the session. See
+     * [session turns](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage#inspect-session-turns).
      *
      * @example
      * ```ts
-     * const subagent =
-     *   await client.beta.agents.sessions.subagents.retrieve(
-     *     'subagent_id',
+     * const turn =
+     *   await client.beta.agents.sessions.turns.retrieve(
+     *     'turn_id',
      *     { session_id: 'session_id' },
      *   );
      * ```
      */
-    retrieve(subagentID, params, options) {
+    retrieve(turnID, params, options) {
         const { session_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/subagents/${subagentID}`, resolveResourceRequestOptions$R(options, (options) => ({
+        return this._client.get(path `/agents/sessions/${session_id}/turns/${turnID}`, resolveResourceRequestOptions$S(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49242,7 +49693,7 @@ class Subagents extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/subagents`, (CursorPage), resolveResourceRequestOptions$R(options, (options) => ({
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/turns`, (CursorPage), resolveResourceRequestOptions$S(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49250,11 +49701,10 @@ class Subagents extends APIResource {
         })));
     }
 }
-Subagents.Items = Items$2;
-Subagents.Turns = Turns;
+Turns.Items = Items$1;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$Q(options, buildOptions) {
+function resolveResourceRequestOptions$R(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -49314,19 +49764,20 @@ let Sessions$2 = class Sessions extends APIResource {
         super(...arguments);
         this.subagents = new Subagents(this._client);
         this.artifacts = new Artifacts(this._client);
-        this.items = new Items$3(this._client);
+        this.items = new Items$4(this._client);
         this.events = new Events(this._client);
         this.traces = new Traces(this._client);
-        this.turns = new Turns$1(this._client);
+        this.turns = new Turns(this._client);
     }
     /** Stream one turn on an idle session with a single input writer. See AgentSessionStream for lifecycle and tool handling. */
     stream(sessionID, params, options) {
         return new AgentSessionStream(this, sessionID, params, options);
     }
     create(body, options) {
-        const output = captureAgentOutput(body, options);
+        const creation = captureCreationTools(body, options);
+        const output = captureAgentOutput(creation.body, creation.options);
         return this._client
-            .post('/agents/sessions', resolveResourceRequestOptions$Q(output.options, (options) => ({
+            .post('/agents/sessions', resolveResourceRequestOptions$R(output.options, (options) => ({
             body: output.body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49336,7 +49787,9 @@ let Sessions$2 = class Sessions extends APIResource {
             ._thenUnwrap((data, { options }) => 
         // SAFETY: defaultParseResponse uses this same resolved flag to return the configured stream instance.
         options.stream
-            ? withAgentTurnResult(data, output.format)
+            ? withAgentTurnResult(data, output.format, creation.handlers
+                ? { sessions: this, handlers: creation.handlers, options: output.options }
+                : undefined)
             : data);
     }
     /**
@@ -49350,7 +49803,7 @@ let Sessions$2 = class Sessions extends APIResource {
      * ```
      */
     retrieve(sessionID, options) {
-        return this._client.get(path `/agents/sessions/${sessionID}`, resolveResourceRequestOptions$Q(options, (options) => ({
+        return this._client.get(path `/agents/sessions/${sessionID}`, resolveResourceRequestOptions$R(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49368,7 +49821,7 @@ let Sessions$2 = class Sessions extends APIResource {
      * ```
      */
     update(sessionID, body = {}, options) {
-        return this._client.post(path `/agents/sessions/${sessionID}`, resolveResourceRequestOptions$Q(options, (options) => ({
+        return this._client.post(path `/agents/sessions/${sessionID}`, resolveResourceRequestOptions$R(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49382,7 +49835,7 @@ let Sessions$2 = class Sessions extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/agents/sessions', (CursorPage), resolveResourceRequestOptions$Q(options, (options) => ({
+        return this._client.getAPIList('/agents/sessions', (CursorPage), resolveResourceRequestOptions$R(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49403,7 +49856,7 @@ let Sessions$2 = class Sessions extends APIResource {
      * ```
      */
     delete(sessionID, options) {
-        return this._client.delete(path `/agents/sessions/${sessionID}`, resolveResourceRequestOptions$Q(options, (options) => ({
+        return this._client.delete(path `/agents/sessions/${sessionID}`, resolveResourceRequestOptions$R(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49412,13 +49865,13 @@ let Sessions$2 = class Sessions extends APIResource {
 };
 Sessions$2.Subagents = Subagents;
 Sessions$2.Artifacts = Artifacts;
-Sessions$2.Items = Items$3;
+Sessions$2.Items = Items$4;
 Sessions$2.Events = Events;
 Sessions$2.Traces = Traces;
-Sessions$2.Turns = Turns$1;
+Sessions$2.Turns = Turns;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$P(options, buildOptions) {
+function resolveResourceRequestOptions$Q(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -49496,7 +49949,7 @@ class Credentials extends APIResource {
      * ```
      */
     create(vaultID, body, options) {
-        return this._client.post(path `/vaults/${vaultID}/credentials`, resolveResourceRequestOptions$P(options, (options) => ({
+        return this._client.post(path `/vaults/${vaultID}/credentials`, resolveResourceRequestOptions$Q(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49518,7 +49971,7 @@ class Credentials extends APIResource {
      */
     retrieve(credentialID, params, options) {
         const { vault_id } = params;
-        return this._client.get(path `/vaults/${vault_id}/credentials/${credentialID}`, resolveResourceRequestOptions$P(options, (options) => ({
+        return this._client.get(path `/vaults/${vault_id}/credentials/${credentialID}`, resolveResourceRequestOptions$Q(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49539,7 +49992,7 @@ class Credentials extends APIResource {
      */
     update(credentialID, params, options) {
         const { vault_id, ...body } = params;
-        return this._client.post(path `/vaults/${vault_id}/credentials/${credentialID}`, resolveResourceRequestOptions$P(options, (options) => ({
+        return this._client.post(path `/vaults/${vault_id}/credentials/${credentialID}`, resolveResourceRequestOptions$Q(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49547,13 +50000,13 @@ class Credentials extends APIResource {
         })));
     }
     list(vaultID, query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$o(query, ['after', 'limit', 'order', 'status'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$o(query, ['after', 'limit', 'metadata', 'order', 'status'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/vaults/${vaultID}/credentials`, (CursorPage), resolveResourceRequestOptions$P(options, (options) => ({
+        return this._client.getAPIList(path `/vaults/${vaultID}/credentials`, (CursorPage), resolveResourceRequestOptions$Q(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49575,7 +50028,7 @@ class Credentials extends APIResource {
      */
     delete(credentialID, params, options) {
         const { vault_id } = params;
-        return this._client.delete(path `/vaults/${vault_id}/credentials/${credentialID}`, resolveResourceRequestOptions$P(options, (options) => ({
+        return this._client.delete(path `/vaults/${vault_id}/credentials/${credentialID}`, resolveResourceRequestOptions$Q(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49584,7 +50037,7 @@ class Credentials extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$O(options, buildOptions) {
+function resolveResourceRequestOptions$P(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -49654,7 +50107,7 @@ class Vaults extends APIResource {
      * ```
      */
     create(body = {}, options) {
-        return this._client.post('/vaults', resolveResourceRequestOptions$O(options, (options) => ({
+        return this._client.post('/vaults', resolveResourceRequestOptions$P(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49673,20 +50126,41 @@ class Vaults extends APIResource {
      * ```
      */
     retrieve(vaultID, options) {
-        return this._client.get(path `/vaults/${vaultID}`, resolveResourceRequestOptions$O(options, (options) => ({
+        return this._client.get(path `/vaults/${vaultID}`, resolveResourceRequestOptions$P(options, (options) => ({
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Updates the name or metadata of an active vault. Omitted fields remain
+     * unchanged. See
+     * [vaults](https://developers.openai.com/api/docs/guides/agents-api/tools/vaults).
+     *
+     * @example
+     * ```ts
+     * const vault = await client.beta.agents.vaults.update(
+     *   'vault_id',
+     *   { name: 'Research vault' },
+     * );
+     * ```
+     */
+    update(vaultID, body, options) {
+        return this._client.post(path `/vaults/${vaultID}`, resolveResourceRequestOptions$P(options, (options) => ({
+            body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
         })));
     }
     list(query = {}, options) {
-        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$n(query, ['after', 'limit', 'order', 'status'], options);
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$n(query, ['after', 'limit', 'metadata', 'order', 'status'], options);
         if (normalizeRequestOptionsForQueryOptions !== undefined) {
             options = normalizeRequestOptionsForQueryOptions;
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/vaults', (CursorPage), resolveResourceRequestOptions$O(options, (options) => ({
+        return this._client.getAPIList('/vaults', (CursorPage), resolveResourceRequestOptions$P(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49705,7 +50179,7 @@ class Vaults extends APIResource {
      * ```
      */
     delete(vaultID, options) {
-        return this._client.delete(path `/vaults/${vaultID}`, resolveResourceRequestOptions$O(options, (options) => ({
+        return this._client.delete(path `/vaults/${vaultID}`, resolveResourceRequestOptions$P(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49715,7 +50189,7 @@ class Vaults extends APIResource {
 Vaults.Credentials = Credentials;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$N(options, buildOptions) {
+function resolveResourceRequestOptions$O(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -49789,7 +50263,7 @@ class Agents extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/agents', resolveResourceRequestOptions$N(options, (options) => ({
+        return this._client.post('/agents', resolveResourceRequestOptions$O(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49806,7 +50280,7 @@ class Agents extends APIResource {
      * ```
      */
     retrieve(agentID, options) {
-        return this._client.get(path `/agents/${agentID}`, resolveResourceRequestOptions$N(options, (options) => ({
+        return this._client.get(path `/agents/${agentID}`, resolveResourceRequestOptions$O(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49822,7 +50296,7 @@ class Agents extends APIResource {
      * ```
      */
     update(agentID, body = {}, options) {
-        return this._client.post(path `/agents/${agentID}`, resolveResourceRequestOptions$N(options, (options) => ({
+        return this._client.post(path `/agents/${agentID}`, resolveResourceRequestOptions$O(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49836,7 +50310,7 @@ class Agents extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/agents', (CursorPage), resolveResourceRequestOptions$N(options, (options) => ({
+        return this._client.getAPIList('/agents', (CursorPage), resolveResourceRequestOptions$O(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
@@ -49855,7 +50329,7 @@ class Agents extends APIResource {
      * ```
      */
     delete(agentID, options) {
-        return this._client.delete(path `/agents/${agentID}`, resolveResourceRequestOptions$N(options, (options) => ({
+        return this._client.delete(path `/agents/${agentID}`, resolveResourceRequestOptions$O(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49867,7 +50341,7 @@ Agents.Vaults = Vaults;
 Agents.Sessions = Sessions$2;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$M(options, buildOptions) {
+function resolveResourceRequestOptions$N(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 let Sessions$1 = class Sessions extends APIResource {
@@ -49884,7 +50358,7 @@ let Sessions$1 = class Sessions extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/chatkit/sessions', resolveResourceRequestOptions$M(options, (options) => ({
+        return this._client.post('/chatkit/sessions', resolveResourceRequestOptions$N(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
@@ -49903,7 +50377,7 @@ let Sessions$1 = class Sessions extends APIResource {
      * ```
      */
     cancel(sessionID, options) {
-        return this._client.post(path `/chatkit/sessions/${sessionID}/cancel`, resolveResourceRequestOptions$M(options, (options) => ({
+        return this._client.post(path `/chatkit/sessions/${sessionID}/cancel`, resolveResourceRequestOptions$N(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49912,7 +50386,7 @@ let Sessions$1 = class Sessions extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$L(options, buildOptions) {
+function resolveResourceRequestOptions$M(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -49978,7 +50452,7 @@ let Threads$1 = class Threads extends APIResource {
      * ```
      */
     retrieve(threadID, options) {
-        return this._client.get(path `/chatkit/threads/${threadID}`, resolveResourceRequestOptions$L(options, (options) => ({
+        return this._client.get(path `/chatkit/threads/${threadID}`, resolveResourceRequestOptions$M(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -49991,7 +50465,7 @@ let Threads$1 = class Threads extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/chatkit/threads', (ConversationCursorPage), resolveResourceRequestOptions$L(options, (options) => ({
+        return this._client.getAPIList('/chatkit/threads', (ConversationCursorPage), resolveResourceRequestOptions$M(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
@@ -50009,7 +50483,7 @@ let Threads$1 = class Threads extends APIResource {
      * ```
      */
     delete(threadID, options) {
-        return this._client.delete(path `/chatkit/threads/${threadID}`, resolveResourceRequestOptions$L(options, (options) => ({
+        return this._client.delete(path `/chatkit/threads/${threadID}`, resolveResourceRequestOptions$M(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -50022,7 +50496,7 @@ let Threads$1 = class Threads extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/chatkit/threads/${threadID}/items`, (ConversationCursorPage), resolveResourceRequestOptions$L(options, (options) => ({
+        return this._client.getAPIList(path `/chatkit/threads/${threadID}/items`, (ConversationCursorPage), resolveResourceRequestOptions$M(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
@@ -50043,7 +50517,7 @@ ChatKit.Sessions = Sessions$1;
 ChatKit.Threads = Threads$1;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$K(options, buildOptions) {
+function resolveResourceRequestOptions$L(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -50110,7 +50584,7 @@ let InputItems$1 = class InputItems extends APIResource {
         }
         params = params;
         const { betas, ...query } = params ?? {};
-        return this._client.getAPIList(path `/responses/${responseID}/input_items?beta=true`, (CursorPage), resolveResourceRequestOptions$K(options, (options) => ({
+        return this._client.getAPIList(path `/responses/${responseID}/input_items?beta=true`, (CursorPage), resolveResourceRequestOptions$L(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([
@@ -50123,7 +50597,7 @@ let InputItems$1 = class InputItems extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$J(options, buildOptions) {
+function resolveResourceRequestOptions$K(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 /**
@@ -50144,7 +50618,7 @@ let InputTokens$1 = class InputTokens extends APIResource {
      */
     count(params = {}, options) {
         const { betas, ...body } = params ?? {};
-        return this._client.post('/responses/input_tokens?beta=true', resolveResourceRequestOptions$J(options, (options) => ({
+        return this._client.post('/responses/input_tokens?beta=true', resolveResourceRequestOptions$K(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([
@@ -50157,7 +50631,7 @@ let InputTokens$1 = class InputTokens extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$I(options, buildOptions) {
+function resolveResourceRequestOptions$J(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -50223,7 +50697,7 @@ let Responses$1 = class Responses extends APIResource {
     }
     create(params, options) {
         const { betas, ...body } = params;
-        return this._client.post('/responses?beta=true', resolveResourceRequestOptions$I(options, (options) => ({
+        return this._client.post('/responses?beta=true', resolveResourceRequestOptions$J(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([
@@ -50242,7 +50716,7 @@ let Responses$1 = class Responses extends APIResource {
         }
         params = params;
         const { betas, ...query } = params ?? {};
-        return this._client.get(path `/responses/${responseID}?beta=true`, resolveResourceRequestOptions$I(options, (options) => ({
+        return this._client.get(path `/responses/${responseID}?beta=true`, resolveResourceRequestOptions$J(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([
@@ -50265,7 +50739,7 @@ let Responses$1 = class Responses extends APIResource {
      */
     delete(responseID, params = {}, options) {
         const { betas } = params ?? {};
-        return this._client.delete(path `/responses/${responseID}?beta=true`, resolveResourceRequestOptions$I(options, (options) => ({
+        return this._client.delete(path `/responses/${responseID}?beta=true`, resolveResourceRequestOptions$J(options, (options) => ({
             ...options,
             headers: buildHeaders([
                 {
@@ -50291,7 +50765,7 @@ let Responses$1 = class Responses extends APIResource {
      */
     cancel(responseID, params = {}, options) {
         const { betas } = params ?? {};
-        return this._client.post(path `/responses/${responseID}/cancel?beta=true`, resolveResourceRequestOptions$I(options, (options) => ({
+        return this._client.post(path `/responses/${responseID}/cancel?beta=true`, resolveResourceRequestOptions$J(options, (options) => ({
             ...options,
             headers: buildHeaders([
                 { ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
@@ -50318,7 +50792,7 @@ let Responses$1 = class Responses extends APIResource {
      */
     compact(params, options) {
         const { betas, ...body } = params;
-        return this._client.post('/responses/compact?beta=true', resolveResourceRequestOptions$I(options, (options) => ({
+        return this._client.post('/responses/compact?beta=true', resolveResourceRequestOptions$J(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([
@@ -50333,7 +50807,7 @@ Responses$1.InputItems = InputItems$1;
 Responses$1.InputTokens = InputTokens$1;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$H(options, buildOptions) {
+function resolveResourceRequestOptions$I(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -50400,7 +50874,7 @@ class Messages extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     create(threadID, body, options) {
-        return this._client.post(path `/threads/${threadID}/messages`, resolveResourceRequestOptions$H(options, (options) => ({
+        return this._client.post(path `/threads/${threadID}/messages`, resolveResourceRequestOptions$I(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -50414,7 +50888,7 @@ class Messages extends APIResource {
      */
     retrieve(messageID, params, options) {
         const { thread_id } = params;
-        return this._client.get(path `/threads/${thread_id}/messages/${messageID}`, resolveResourceRequestOptions$H(options, (options) => ({
+        return this._client.get(path `/threads/${thread_id}/messages/${messageID}`, resolveResourceRequestOptions$I(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -50427,7 +50901,7 @@ class Messages extends APIResource {
      */
     update(messageID, params, options) {
         const { thread_id, ...body } = params;
-        return this._client.post(path `/threads/${thread_id}/messages/${messageID}`, resolveResourceRequestOptions$H(options, (options) => ({
+        return this._client.post(path `/threads/${thread_id}/messages/${messageID}`, resolveResourceRequestOptions$I(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -50441,7 +50915,7 @@ class Messages extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/threads/${threadID}/messages`, (CursorPage), resolveResourceRequestOptions$H(options, (options) => ({
+        return this._client.getAPIList(path `/threads/${threadID}/messages`, (CursorPage), resolveResourceRequestOptions$I(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -50455,7 +50929,7 @@ class Messages extends APIResource {
      */
     delete(messageID, params, options) {
         const { thread_id } = params;
-        return this._client.delete(path `/threads/${thread_id}/messages/${messageID}`, resolveResourceRequestOptions$H(options, (options) => ({
+        return this._client.delete(path `/threads/${thread_id}/messages/${messageID}`, resolveResourceRequestOptions$I(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -50464,7 +50938,7 @@ class Messages extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$G(options, buildOptions) {
+function resolveResourceRequestOptions$H(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 /**
@@ -50480,7 +50954,7 @@ class Steps extends APIResource {
      */
     retrieve(stepID, params, options) {
         const { thread_id, run_id, ...query } = params;
-        return this._client.get(path `/threads/${thread_id}/runs/${run_id}/steps/${stepID}`, resolveResourceRequestOptions$G(options, (options) => ({
+        return this._client.get(path `/threads/${thread_id}/runs/${run_id}/steps/${stepID}`, resolveResourceRequestOptions$H(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -50494,7 +50968,7 @@ class Steps extends APIResource {
      */
     list(runID, params, options) {
         const { thread_id, ...query } = params;
-        return this._client.getAPIList(path `/threads/${thread_id}/runs/${runID}/steps`, (CursorPage), resolveResourceRequestOptions$G(options, (options) => ({
+        return this._client.getAPIList(path `/threads/${thread_id}/runs/${runID}/steps`, (CursorPage), resolveResourceRequestOptions$H(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -51713,7 +52187,7 @@ function pollAssistantRun(resource, runID, params, options) {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$F(options, buildOptions) {
+function resolveResourceRequestOptions$G(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -51780,7 +52254,7 @@ let Runs$1 = class Runs extends APIResource {
     }
     create(threadID, params, options) {
         const { include, ...body } = params;
-        return this._client.post(path `/threads/${threadID}/runs`, resolveResourceRequestOptions$F(options, (options) => ({
+        return this._client.post(path `/threads/${threadID}/runs`, resolveResourceRequestOptions$G(options, (options) => ({
             query: { include },
             body,
             ...options,
@@ -51797,7 +52271,7 @@ let Runs$1 = class Runs extends APIResource {
      */
     retrieve(runID, params, options) {
         const { thread_id } = params;
-        return this._client.get(path `/threads/${thread_id}/runs/${runID}`, resolveResourceRequestOptions$F(options, (options) => ({
+        return this._client.get(path `/threads/${thread_id}/runs/${runID}`, resolveResourceRequestOptions$G(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -51810,7 +52284,7 @@ let Runs$1 = class Runs extends APIResource {
      */
     update(runID, params, options) {
         const { thread_id, ...body } = params;
-        return this._client.post(path `/threads/${thread_id}/runs/${runID}`, resolveResourceRequestOptions$F(options, (options) => ({
+        return this._client.post(path `/threads/${thread_id}/runs/${runID}`, resolveResourceRequestOptions$G(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -51824,7 +52298,7 @@ let Runs$1 = class Runs extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/threads/${threadID}/runs`, (CursorPage), resolveResourceRequestOptions$F(options, (options) => ({
+        return this._client.getAPIList(path `/threads/${threadID}/runs`, (CursorPage), resolveResourceRequestOptions$G(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -51838,7 +52312,7 @@ let Runs$1 = class Runs extends APIResource {
      */
     cancel(runID, params, options) {
         const { thread_id } = params;
-        return this._client.post(path `/threads/${thread_id}/runs/${runID}/cancel`, resolveResourceRequestOptions$F(options, (options) => ({
+        return this._client.post(path `/threads/${thread_id}/runs/${runID}/cancel`, resolveResourceRequestOptions$G(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -51877,7 +52351,7 @@ let Runs$1 = class Runs extends APIResource {
     }
     submitToolOutputs(runID, params, options) {
         const { thread_id, ...body } = params;
-        return this._client.post(path `/threads/${thread_id}/runs/${runID}/submit_tool_outputs`, resolveResourceRequestOptions$F(options, (options) => ({
+        return this._client.post(path `/threads/${thread_id}/runs/${runID}/submit_tool_outputs`, resolveResourceRequestOptions$G(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -51907,7 +52381,7 @@ let Runs$1 = class Runs extends APIResource {
 Runs$1.Steps = Steps;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$E(options, buildOptions) {
+function resolveResourceRequestOptions$F(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 /**
@@ -51927,7 +52401,7 @@ class Threads extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     create(body = {}, options) {
-        return this._client.post('/threads', resolveResourceRequestOptions$E(options, (options) => ({
+        return this._client.post('/threads', resolveResourceRequestOptions$F(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -51940,7 +52414,7 @@ class Threads extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     retrieve(threadID, options) {
-        return this._client.get(path `/threads/${threadID}`, resolveResourceRequestOptions$E(options, (options) => ({
+        return this._client.get(path `/threads/${threadID}`, resolveResourceRequestOptions$F(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -51952,7 +52426,7 @@ class Threads extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     update(threadID, body, options) {
-        return this._client.post(path `/threads/${threadID}`, resolveResourceRequestOptions$E(options, (options) => ({
+        return this._client.post(path `/threads/${threadID}`, resolveResourceRequestOptions$F(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -51965,14 +52439,14 @@ class Threads extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     delete(threadID, options) {
-        return this._client.delete(path `/threads/${threadID}`, resolveResourceRequestOptions$E(options, (options) => ({
+        return this._client.delete(path `/threads/${threadID}`, resolveResourceRequestOptions$F(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
         })));
     }
     createAndRun(body, options) {
-        return this._client.post('/threads/runs', resolveResourceRequestOptions$E(options, (options) => ({
+        return this._client.post('/threads/runs', resolveResourceRequestOptions$F(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
@@ -52020,7 +52494,7 @@ Beta.Assistants = Assistants;
 Beta.Threads = Threads;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$D(options, buildOptions) {
+function resolveResourceRequestOptions$E(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 /**
@@ -52028,7 +52502,7 @@ function resolveResourceRequestOptions$D(options, buildOptions) {
  */
 class Completions extends APIResource {
     create(body, options) {
-        return this._client.post('/completions', resolveResourceRequestOptions$D(options, (options) => ({
+        return this._client.post('/completions', resolveResourceRequestOptions$E(options, (options) => ({
             body,
             ...options,
             stream: body.stream ?? false,
@@ -52038,7 +52512,7 @@ class Completions extends APIResource {
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$C(options, buildOptions) {
+function resolveResourceRequestOptions$D(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 let Content$2 = class Content extends APIResource {
@@ -52047,7 +52521,7 @@ let Content$2 = class Content extends APIResource {
      */
     retrieve(fileID, params, options) {
         const { container_id } = params;
-        return this._client.get(path `/containers/${container_id}/files/${fileID}/content`, resolveResourceRequestOptions$C(options, (options) => ({
+        return this._client.get(path `/containers/${container_id}/files/${fileID}/content`, resolveResourceRequestOptions$D(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -52057,7 +52531,7 @@ let Content$2 = class Content extends APIResource {
 };
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$B(options, buildOptions) {
+function resolveResourceRequestOptions$C(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -52124,14 +52598,14 @@ let Files$2 = class Files extends APIResource {
      * a JSON request with a file ID.
      */
     create(containerID, body, options) {
-        return this._client.post(path `/containers/${containerID}/files`, resolveResourceRequestOptions$B(options, (options) => maybeMultipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
+        return this._client.post(path `/containers/${containerID}/files`, resolveResourceRequestOptions$C(options, (options) => maybeMultipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
     /**
      * Retrieve Container File
      */
     retrieve(fileID, params, options) {
         const { container_id } = params;
-        return this._client.get(path `/containers/${container_id}/files/${fileID}`, resolveResourceRequestOptions$B(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+        return this._client.get(path `/containers/${container_id}/files/${fileID}`, resolveResourceRequestOptions$C(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     list(containerID, query = {}, options) {
         const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$g(query, ['after', 'limit', 'order'], options);
@@ -52140,7 +52614,7 @@ let Files$2 = class Files extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/containers/${containerID}/files`, (CursorPage), resolveResourceRequestOptions$B(options, (options) => ({
+        return this._client.getAPIList(path `/containers/${containerID}/files`, (CursorPage), resolveResourceRequestOptions$C(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
@@ -52151,7 +52625,7 @@ let Files$2 = class Files extends APIResource {
      */
     delete(fileID, params, options) {
         const { container_id } = params;
-        return this._client.delete(path `/containers/${container_id}/files/${fileID}`, resolveResourceRequestOptions$B(options, (options) => ({
+        return this._client.delete(path `/containers/${container_id}/files/${fileID}`, resolveResourceRequestOptions$C(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -52161,7 +52635,7 @@ let Files$2 = class Files extends APIResource {
 Files$2.Content = Content$2;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$A(options, buildOptions) {
+function resolveResourceRequestOptions$B(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -52225,7 +52699,7 @@ class Containers extends APIResource {
      * Create Container
      */
     create(body, options) {
-        return this._client.post('/containers', resolveResourceRequestOptions$A(options, (options) => ({
+        return this._client.post('/containers', resolveResourceRequestOptions$B(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
@@ -52235,7 +52709,7 @@ class Containers extends APIResource {
      * Retrieve Container
      */
     retrieve(containerID, options) {
-        return this._client.get(path `/containers/${containerID}`, resolveResourceRequestOptions$A(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+        return this._client.get(path `/containers/${containerID}`, resolveResourceRequestOptions$B(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     list(query = {}, options) {
         const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery$f(query, ['after', 'limit', 'name', 'order'], options);
@@ -52244,7 +52718,7 @@ class Containers extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList('/containers', (CursorPage), resolveResourceRequestOptions$A(options, (options) => ({
+        return this._client.getAPIList('/containers', (CursorPage), resolveResourceRequestOptions$B(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
@@ -52254,7 +52728,7 @@ class Containers extends APIResource {
      * Delete Container
      */
     delete(containerID, options) {
-        return this._client.delete(path `/containers/${containerID}`, resolveResourceRequestOptions$A(options, (options) => ({
+        return this._client.delete(path `/containers/${containerID}`, resolveResourceRequestOptions$B(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
@@ -52264,7 +52738,7 @@ class Containers extends APIResource {
 Containers.Files = Files$2;
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$z(options, buildOptions) {
+function resolveResourceRequestOptions$A(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 class ContentProvenanceChecks extends APIResource {
@@ -52280,12 +52754,12 @@ class ContentProvenanceChecks extends APIResource {
      * company's model, which the tool currently does not detect.
      */
     create(body, options) {
-        return this._client.post('/content_provenance_checks', resolveResourceRequestOptions$z(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
+        return this._client.post('/content_provenance_checks', resolveResourceRequestOptions$A(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$y(options, buildOptions) {
+function resolveResourceRequestOptions$z(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 // Recognizable options across SDK runtime versions. Keep this independent of
@@ -52349,7 +52823,7 @@ class Items extends APIResource {
      */
     create(conversationID, params, options) {
         const { include, ...body } = params;
-        return this._client.post(path `/conversations/${conversationID}/items`, resolveResourceRequestOptions$y(options, (options) => ({
+        return this._client.post(path `/conversations/${conversationID}/items`, resolveResourceRequestOptions$z(options, (options) => ({
             query: { include },
             body,
             ...options,
@@ -52361,7 +52835,7 @@ class Items extends APIResource {
      */
     retrieve(itemID, params, options) {
         const { conversation_id, ...query } = params;
-        return this._client.get(path `/conversations/${conversation_id}/items/${itemID}`, resolveResourceRequestOptions$y(options, (options) => ({
+        return this._client.get(path `/conversations/${conversation_id}/items/${itemID}`, resolveResourceRequestOptions$z(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
@@ -52374,7 +52848,7 @@ class Items extends APIResource {
             query = {};
         }
         query = query;
-        return this._client.getAPIList(path `/conversations/${conversationID}/items`, (ConversationCursorPage), resolveResourceRequestOptions$y(options, (options) => ({
+        return this._client.getAPIList(path `/conversations/${conversationID}/items`, (ConversationCursorPage), resolveResourceRequestOptions$z(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
@@ -52385,12 +52859,12 @@ class Items extends APIResource {
      */
     delete(itemID, params, options) {
         const { conversation_id } = params;
-        return this._client.delete(path `/conversations/${conversation_id}/items/${itemID}`, resolveResourceRequestOptions$y(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+        return this._client.delete(path `/conversations/${conversation_id}/items/${itemID}`, resolveResourceRequestOptions$z(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-function resolveResourceRequestOptions$x(options, buildOptions) {
+function resolveResourceRequestOptions$y(options, buildOptions) {
     return Promise.resolve(options).then(buildOptions);
 }
 /**
@@ -52405,7 +52879,7 @@ class Conversations extends APIResource {
      * Create a conversation.
      */
     create(body = {}, options) {
-        return this._client.post('/conversations', resolveResourceRequestOptions$x(options, (options) => ({
+        return this._client.post('/conversations', resolveResourceRequestOptions$y(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
@@ -52415,13 +52889,13 @@ class Conversations extends APIResource {
      * Get a conversation
      */
     retrieve(conversationID, options) {
-        return this._client.get(path `/conversations/${conversationID}`, resolveResourceRequestOptions$x(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+        return this._client.get(path `/conversations/${conversationID}`, resolveResourceRequestOptions$y(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Update a conversation
      */
     update(conversationID, body, options) {
-        return this._client.post(path `/conversations/${conversationID}`, resolveResourceRequestOptions$x(options, (options) => ({
+        return this._client.post(path `/conversations/${conversationID}`, resolveResourceRequestOptions$y(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
@@ -52431,10 +52905,28 @@ class Conversations extends APIResource {
      * Delete a conversation. Items in the conversation will not be deleted.
      */
     delete(conversationID, options) {
-        return this._client.delete(path `/conversations/${conversationID}`, resolveResourceRequestOptions$x(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+        return this._client.delete(path `/conversations/${conversationID}`, resolveResourceRequestOptions$y(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 Conversations.Items = Items;
+
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+function resolveResourceRequestOptions$x(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class Decisions extends APIResource {
+    /**
+     * Use this endpoint to quickly answer classification or scoring questions about
+     * some input. You can ask multiple questions in one request.
+     */
+    create(body, options) {
+        return this._client.post('/decisions', resolveResourceRequestOptions$x(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+}
 
 /**
  * Sends the optimized embeddings request while preserving explicit encodings and
@@ -53423,26 +53915,29 @@ function resolveResourceRequestOptions$o(options, buildOptions) {
  */
 class Images extends APIResource {
     /**
-     * Creates a variation of a given image. This endpoint only supports `dall-e-2`.
+     * This endpoint is retired and no longer available. Use the image edits endpoint
+     * with a GPT Image model and a prompt to create a variation of an image. The
+     * request and response schemas below describe the legacy contract.
      *
-     * @example
-     * ```ts
-     * const imagesResponse = await client.images.createVariation({
-     *   image: fs.createReadStream('otter.png'),
-     * });
-     * ```
+     * @deprecated
      */
     createVariation(body, options) {
         return this._client.post('/images/variations', resolveResourceRequestOptions$o(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
     edit(body, options) {
-        return this._client.post('/images/edits', resolveResourceRequestOptions$o(options, (options) => multipartFormRequestOptions({
+        return this._client.post('/images/edits', resolveResourceRequestOptions$o(options, (options) => multipartFormRequestOptions(((requestOptions) => ({
+            ...requestOptions,
+            body: Object.fromEntries(Object.entries(requestOptions.body ?? {}).map(([key, value]) => [
+                key,
+                key === 'safety_identifier' && value === null ? undefined : value,
+            ])),
+        }))({
             body,
             ...options,
             stream: body.stream ?? false,
             __metadata: { ...options?.__metadata, ...(body.model == null ? {} : { model: body.model }) },
             __security: { bearerAuth: true },
-        }, this._client)));
+        }), this._client)));
     }
     generate(body, options) {
         return this._client.post('/images/generations', resolveResourceRequestOptions$o(options, (options) => ({
@@ -53947,7 +54442,7 @@ function maybeParseResponse(response, params) {
  * Parses completed response text and strict function-tool arguments, matching
  * namespaced functions by both namespace and name.
  *
- * Incomplete or nonterminal responses keep their parsed values as `null`, and
+ * Incomplete responses and messages with an explicit non-final phase stay unparsed.
  * `output_parsed` returns the first successfully parsed output-text item.
  */
 function parseResponse(response, params) {
@@ -53961,7 +54456,9 @@ function parseResponse(response, params) {
                 if (content.type === 'output_text') {
                     return {
                         ...content,
-                        parsed: shouldParse ? parseTextFormat(params, content.text) : null,
+                        parsed: shouldParse && (item.phase == null || item.phase === 'final_answer')
+                            ? parseTextFormat(params, content.text)
+                            : null,
                     };
                 }
                 return content;
@@ -54024,6 +54521,11 @@ function getInputToolByName(input_tools, name, namespace) {
         else if (tool.type === 'namespace' && tool.name === namespace) {
             return tool.tools.find((nested) => nested.type === 'function' && nested.name === name);
         }
+    }
+    // Hosted discovery exposes a deferred top-level function under its own name.
+    // A declared namespace above owns that identity, even if it has no matching function.
+    if (namespace === name) {
+        return input_tools.find((tool) => tool.type === 'function' && tool.name === name && tool.defer_loading === true);
     }
     return undefined;
 }
@@ -54298,7 +54800,7 @@ function getOutputItemIdentityKeys(output, eventType) {
     const identities = [];
     if (hasOwn(output, 'id')) {
         // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate untrusted streamed item identifiers and discriminators before mutating the response snapshot.
-        if (typeof output.id !== 'string' || output.id.length === 0) {
+        if (typeof output.id !== 'string' || (output.id.length === 0 && output.type !== 'computer_call')) {
             throw new OpenAIError(`expected a non-empty output item id for ${eventType}`);
         }
         identities.push(`id:${output.id}`);
@@ -54307,8 +54809,10 @@ function getOutputItemIdentityKeys(output, eventType) {
         throw new OpenAIError(`expected a non-empty output item id for ${eventType}`);
     }
     if (hasRoutedOutputCallIdentity(output)) {
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate untrusted streamed item identifiers and discriminators before mutating the response snapshot.
-        if (!hasOwn(output, 'call_id') || typeof output.call_id !== 'string' || output.call_id.length === 0) {
+        if (!hasOwn(output, 'call_id') ||
+            // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate untrusted streamed call identifiers before mutating the response snapshot.
+            typeof output.call_id !== 'string' ||
+            (output.call_id.length === 0 && output.type !== 'function_call')) {
             throw new OpenAIError(`expected a non-empty output item call_id for ${eventType}`);
         }
         identities.push(`call:${output.type}:${output.call_id}`);
@@ -54412,17 +54916,16 @@ function getExpectedOutputItemType(event) {
     }
     return expectedOutputItemTypes[event.type];
 }
-function validateCompletedOutputItemIdentity(event, snapshot) {
-    const output = getOutput(snapshot, event.output_index);
-    const replacement = event.item;
-    getOutputItemIdentityKeys(output, event.type);
-    getOutputItemIdentityKeys(replacement, event.type);
+function validateResponseOutputItemIdentity(output, replacement, eventType) {
+    getOutputItemIdentityKeys(output, eventType);
+    getOutputItemIdentityKeys(replacement, eventType);
     if (!hasOwn(replacement, 'type') || output.type !== replacement.type) {
         throw new OpenAIError(`expected output item type '${output.type}', got '${replacement.type}'`);
     }
     const outputID = hasOwn(output, 'id') ? output.id : undefined;
     const replacementID = hasOwn(replacement, 'id') ? replacement.id : undefined;
-    if (outputID !== replacementID) {
+    const addsOptionalID = outputID === undefined && (output.type === 'function_call' || output.type === 'custom_tool_call');
+    if (outputID !== replacementID && !addsOptionalID) {
         throw new OpenAIError(`expected output item id '${outputID}', got '${replacementID}'`);
     }
     if (hasRoutedOutputCallIdentity(output) &&
@@ -54433,7 +54936,7 @@ function validateCompletedOutputItemIdentity(event, snapshot) {
 }
 function validateOutputItemIdentity(event, snapshot, rejectInvalidShellTargets) {
     if (event.type === 'response.output_item.done') {
-        validateCompletedOutputItemIdentity(event, snapshot);
+        // Item identity is validated at the shared replacement owner before any update.
         return;
     }
     if (rejectInvalidShellTargets &&
@@ -54601,7 +55104,7 @@ function sanitizeResponseEvent(event) {
                 const routingDescriptor = Object.getOwnPropertyDescriptor(event, field);
                 stableValues.set(field, routingDescriptor ? event[field] : undefined);
             }
-            if (type === 'response.output_item.done') {
+            if (type === 'response.output_item.added' || type === 'response.output_item.done') {
                 stableValues.set('item', structuredClone(event.item));
             }
             else if (type === 'response.content_part.added' || type === 'response.content_part.done') {
@@ -54620,12 +55123,35 @@ function sanitizeResponseEvent(event) {
         },
     });
 }
+/** Replace one existing native item, preserving its routing identity and aggregate-text index. */
+function replaceResponseOutputItem(context, snapshot, outputIndex, replacement, updateText = true) {
+    const output = getOutput(snapshot, outputIndex);
+    validateResponseOutputItemIdentity(output, replacement, 'response.output_item.done');
+    if (!hasOwn(output, 'id') && hasOwn(replacement, 'id')) {
+        const { identities } = getResponseOutputIdentityIndex(context, snapshot);
+        addOutputItemIdentities(identities, [`id:${replacement.id}`]);
+    }
+    if (!updateText) {
+        snapshot.output[outputIndex] = replacement;
+        return;
+    }
+    const previousText = getOutputText(context, output);
+    if (output.type === 'message' || replacement.type === 'message') {
+        ensureCanonicalOutputText(context, snapshot);
+    }
+    snapshot.output[outputIndex] = replacement;
+    const nextText = getOutputText(context, replacement);
+    if (context.canonicalSnapshot === snapshot) {
+        context.outputTextIndex.update(outputIndex, nextText.length);
+    }
+    updateOutputText(context, snapshot, outputIndex, previousText, nextText);
+}
 function accumulateOutputItemEvent(event, snapshot, context) {
     switch (event.type) {
         case 'response.output_item.added': {
             validateArrayAppend(snapshot.output, event.output_index, 'output');
             const identityIndex = getResponseOutputIdentityIndex(context, snapshot);
-            const output = structuredClone(event.item);
+            const output = event.item;
             const identities = getOutputItemIdentityKeys(output, event.type);
             assertOutputItemIdentitiesAvailable(identityIndex.identities, identities);
             if (output.type === 'message') {
@@ -54649,18 +55175,7 @@ function accumulateOutputItemEvent(event, snapshot, context) {
             return true;
         }
         case 'response.output_item.done': {
-            const output = getOutput(snapshot, event.output_index);
-            const previousText = getOutputText(context, output);
-            const replacement = event.item;
-            if (output.type === 'message' || replacement.type === 'message') {
-                ensureCanonicalOutputText(context, snapshot);
-            }
-            snapshot.output[event.output_index] = replacement;
-            const nextText = getOutputText(context, replacement);
-            if (context.canonicalSnapshot === snapshot) {
-                context.outputTextIndex.update(event.output_index, nextText.length);
-            }
-            updateOutputText(context, snapshot, event.output_index, previousText, nextText);
+            replaceResponseOutputItem(context, snapshot, event.output_index, event.item);
             return true;
         }
         default: {
@@ -55230,10 +55745,17 @@ function accumulateResponseOutput(dispatchEvent, snapshot, context, rejectInvali
     }
     return false;
 }
-function accumulateResponseWithContext(event, snapshot, context, rejectInvalidShellTargets = false, onSanitizedEvent) {
-    const dispatchEvent = sanitizeResponseEvent(event);
-    if (onSanitizedEvent && dispatchEvent.type !== 'keepalive') {
-        onSanitizedEvent(dispatchEvent);
+function accumulateResponseWithContext(event, snapshot, context, rejectInvalidShellTargets = false, prepareSanitizedEvent) {
+    let dispatchEvent = sanitizeResponseEvent(event);
+    if (prepareSanitizedEvent && dispatchEvent.type !== 'keepalive') {
+        const prepared = prepareSanitizedEvent(dispatchEvent);
+        if (prepared === null) {
+            if (!snapshot) {
+                throw new OpenAIError('Cannot ignore a response event before response.created.');
+            }
+            return snapshot;
+        }
+        dispatchEvent = prepared;
     }
     if (!snapshot) {
         if (dispatchEvent.type !== 'response.created') {
@@ -55250,7 +55772,41 @@ function accumulateResponseWithContext(event, snapshot, context, rejectInvalidSh
     return assertNever();
 }
 
-var _ResponseStream_instances, _ResponseStream_params, _ResponseStream_currentResponseSnapshot, _ResponseStream_finalResponse, _ResponseStream_accumulatorContext, _ResponseStream_beginRequest, _ResponseStream_addEvent, _ResponseStream_endRequest;
+var _ResponseStream_instances, _ResponseStream_params, _ResponseStream_currentResponseSnapshot, _ResponseStream_finalResponse, _ResponseStream_accumulatorContext, _ResponseStream_outputPositions, _ResponseStream_wireByIdentity, _ResponseStream_interimOrderDirty, _ResponseStream_completedOutput, _ResponseStream_unfinishedOutput, _ResponseStream_beginRequest, _ResponseStream_prepareEvent, _ResponseStream_prepareOutputEvent, _ResponseStream_outputAtWireIndex, _ResponseStream_assertComplete, _ResponseStream_recordOutput, _ResponseStream_reorderInterimOutput, _ResponseStream_updateInterimResponse, _ResponseStream_addEvent, _ResponseStream_endRequest;
+// Require every generated native event field here. Unknown hidden transport members remain private.
+const nativeEventFields = {
+    annotation: true,
+    annotation_index: true,
+    arguments: true,
+    background: true,
+    code: true,
+    command: true,
+    command_index: true,
+    content_index: true,
+    delta: true,
+    input: true,
+    item: true,
+    item_id: true,
+    logprobs: true,
+    message: true,
+    obfuscation: true,
+    output: true,
+    output_format: true,
+    output_index: true,
+    param: true,
+    part: true,
+    partial_image_b64: true,
+    partial_image_index: true,
+    quality: true,
+    refusal: true,
+    response: true,
+    sequence_number: true,
+    size: true,
+    status: true,
+    summary_index: true,
+    text: true,
+    type: true,
+};
 /** Streams Responses API events while accumulating the latest response and parsed output. */
 class ResponseStream extends EventStream {
     /** Creates an unstarted stream, retaining request parameters for structured-output parsing. */
@@ -55261,7 +55817,18 @@ class ResponseStream extends EventStream {
         _ResponseStream_currentResponseSnapshot.set(this, void 0);
         _ResponseStream_finalResponse.set(this, void 0);
         _ResponseStream_accumulatorContext.set(this, createResponseContext());
+        _ResponseStream_outputPositions.set(this, new Map());
+        _ResponseStream_wireByIdentity.set(this, new Map());
+        _ResponseStream_interimOrderDirty.set(this, false);
+        _ResponseStream_completedOutput.set(this, new Map());
+        _ResponseStream_unfinishedOutput.set(this, new Map());
         __classPrivateFieldSet(this, _ResponseStream_params, params);
+        this.once('end', () => {
+            __classPrivateFieldGet(this, _ResponseStream_outputPositions, "f").clear();
+            __classPrivateFieldGet(this, _ResponseStream_wireByIdentity, "f").clear();
+            __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").clear();
+            __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").clear();
+        });
     }
     /** Starts a new response stream or replays an existing response by its identifier. */
     static createResponse(client, params, options) {
@@ -55316,12 +55883,251 @@ class ResponseStream extends EventStream {
         return __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_endRequest).call(this);
     }
     /** Iterates over response events; stopping iteration early aborts the underlying request. */
-    [(_ResponseStream_params = new WeakMap(), _ResponseStream_currentResponseSnapshot = new WeakMap(), _ResponseStream_finalResponse = new WeakMap(), _ResponseStream_accumulatorContext = new WeakMap(), _ResponseStream_instances = new WeakSet(), _ResponseStream_beginRequest = function _ResponseStream_beginRequest() {
+    [(_ResponseStream_params = new WeakMap(), _ResponseStream_currentResponseSnapshot = new WeakMap(), _ResponseStream_finalResponse = new WeakMap(), _ResponseStream_accumulatorContext = new WeakMap(), _ResponseStream_outputPositions = new WeakMap(), _ResponseStream_wireByIdentity = new WeakMap(), _ResponseStream_interimOrderDirty = new WeakMap(), _ResponseStream_completedOutput = new WeakMap(), _ResponseStream_unfinishedOutput = new WeakMap(), _ResponseStream_instances = new WeakSet(), _ResponseStream_beginRequest = function _ResponseStream_beginRequest() {
         if (this.ended) {
             return;
         }
         __classPrivateFieldSet(this, _ResponseStream_currentResponseSnapshot, undefined);
         __classPrivateFieldSet(this, _ResponseStream_accumulatorContext, createResponseContext());
+        __classPrivateFieldGet(this, _ResponseStream_outputPositions, "f").clear();
+        __classPrivateFieldGet(this, _ResponseStream_wireByIdentity, "f").clear();
+        __classPrivateFieldSet(this, _ResponseStream_interimOrderDirty, false);
+        __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").clear();
+        __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").clear();
+    }, _ResponseStream_prepareEvent = function _ResponseStream_prepareEvent(event) {
+        if (event.type === 'response.created' ||
+            event.type === 'response.queued' ||
+            event.type === 'response.in_progress' ||
+            event.type === 'response.completed' ||
+            event.type === 'response.failed' ||
+            event.type === 'response.incomplete') {
+            if (!hasOwn(event, 'response')) {
+                throw new OpenAIError('Lifecycle events require their own response field.');
+            }
+            const { response: wireResponse, ...fields } = event;
+            if (!isObj(wireResponse)) {
+                throw new OpenAIError('Lifecycle events require a response object.');
+            }
+            let response = structuredClone(wireResponse);
+            if (__classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f") && response.id !== __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f").id) {
+                throw new OpenAIError('Lifecycle response identity changed.');
+            }
+            if (!hasOwn(response, 'output') || response.output == null) {
+                let output;
+                if (event.type === 'response.completed') {
+                    output = [...__classPrivateFieldGet(this, _ResponseStream_completedOutput, "f")]
+                        // oxlint-disable-next-line unicorn/no-array-sort -- Sort a fresh array; ES2020 declarations do not include toSorted.
+                        .sort(([left], [right]) => left - right)
+                        .map(([, item]) => structuredClone(item));
+                }
+                else if (event.type === 'response.failed' || event.type === 'response.incomplete') {
+                    output = [...__classPrivateFieldGet(this, _ResponseStream_outputPositions, "f").keys()]
+                        // oxlint-disable-next-line unicorn/no-array-sort -- Sort fresh wire indexes; retain partial and completed items.
+                        .sort((left, right) => left - right)
+                        .map((index) => structuredClone(__classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_outputAtWireIndex).call(this, index)));
+                }
+                else {
+                    output = [];
+                }
+                response = { ...response, output };
+                if (event.type === 'response.completed' ||
+                    event.type === 'response.failed' ||
+                    event.type === 'response.incomplete') {
+                    addOutputText(response);
+                }
+            }
+            if (event.type === 'response.completed') {
+                __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_assertComplete).call(this, response);
+            }
+            return { ...fields, type: event.type, sequence_number: event.sequence_number, response };
+        }
+        return __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_prepareOutputEvent).call(this, event);
+    }, _ResponseStream_prepareOutputEvent = function _ResponseStream_prepareOutputEvent(event) {
+        if (!__classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f") || !hasOwn(event, 'output_index') || !('output_index' in event)) {
+            return event;
+        }
+        const index = event.output_index;
+        if (!Number.isSafeInteger(index) || index < 0) {
+            throw new OpenAIError('Invalid response output index.');
+        }
+        let position;
+        if (event.type === 'response.output_item.added') {
+            if (event.item == null) {
+                return null;
+            }
+            if (__classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").has(index) || __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").has(index)) {
+                throw new OpenAIError(`Duplicate response output index ${index}.`);
+            }
+            position = __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f").output.length;
+        }
+        else {
+            const existing = __classPrivateFieldGet(this, _ResponseStream_outputPositions, "f").get(index);
+            if (existing === undefined) {
+                throw new OpenAIError(`missing output at index ${index}`);
+            }
+            position = existing;
+        }
+        return new Proxy(event, {
+            get(target, property) {
+                // oxlint-disable-next-line anti-slop/no-reflect-get -- Preserve the sanitized event fields and their receiver while translating only the dispatch index.
+                return property === 'output_index' ? position : Reflect.get(target, property, target);
+            },
+        });
+    }, _ResponseStream_outputAtWireIndex = function _ResponseStream_outputAtWireIndex(wireIndex) {
+        const position = __classPrivateFieldGet(this, _ResponseStream_outputPositions, "f").get(wireIndex);
+        return (__classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").get(wireIndex) ??
+            (position === undefined ? undefined : __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f")?.output[position]));
+    }, _ResponseStream_assertComplete = function _ResponseStream_assertComplete(response) {
+        if (__classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").size === 0 && __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").size === 0) {
+            return;
+        }
+        const finalItems = new Map((response.output ?? []).map((item) => [outputIdentity(item), item]));
+        for (const item of __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").values()) {
+            const replacement = finalItems.get(outputIdentity(item));
+            if (replacement) {
+                validateResponseOutputItemIdentity(item, replacement, 'response.completed');
+            }
+        }
+        for (const [wireIndex, identity] of __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f")) {
+            const replacement = finalItems.get(identity);
+            if (!replacement) {
+                throw new OpenAIError('Cannot complete response with unfinished output items.');
+            }
+            const previous = __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_outputAtWireIndex).call(this, wireIndex);
+            if (!previous) {
+                throw new OpenAIError('Cannot complete response with a missing output identity.');
+            }
+            validateResponseOutputItemIdentity(previous, replacement, 'response.completed');
+        }
+    }, _ResponseStream_recordOutput = function _ResponseStream_recordOutput(event, response, position) {
+        if (event.type === 'response.completed') {
+            __classPrivateFieldSet(this, _ResponseStream_interimOrderDirty, false);
+            return;
+        }
+        if (response !== __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f")) {
+            const previous = new Map();
+            for (const [wireIndex, item] of __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f")) {
+                previous.set(outputIdentity(item), wireIndex);
+            }
+            for (const [wireIndex, identity] of __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f")) {
+                previous.set(identity, wireIndex);
+            }
+            const positions = new Map();
+            __classPrivateFieldGet(this, _ResponseStream_wireByIdentity, "f").clear();
+            for (const [newPosition, item] of response.output.entries()) {
+                const identity = outputIdentity(item);
+                const oldWireIndex = previous.get(identity);
+                const wireIndex = oldWireIndex ?? newPosition;
+                const done = __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").get(wireIndex);
+                const unfinished = __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").get(wireIndex);
+                if (positions.has(wireIndex) ||
+                    (done && outputIdentity(done) !== identity) ||
+                    (unfinished !== undefined && unfinished !== identity)) {
+                    throw new OpenAIError('Response snapshot has conflicting output positions.');
+                }
+                const previousItem = __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_outputAtWireIndex).call(this, wireIndex);
+                if (previousItem) {
+                    validateResponseOutputItemIdentity(previousItem, item, event.type);
+                }
+                positions.set(wireIndex, newPosition);
+                __classPrivateFieldGet(this, _ResponseStream_wireByIdentity, "f").set(identity, wireIndex);
+                if (done) {
+                    __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").set(wireIndex, structuredClone(item));
+                }
+                else {
+                    __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").set(wireIndex, identity);
+                }
+            }
+            __classPrivateFieldSet(this, _ResponseStream_outputPositions, positions);
+            __classPrivateFieldSet(this, _ResponseStream_interimOrderDirty, !['response.failed', 'response.incomplete'].includes(event.type));
+            if (['response.created', 'response.queued', 'response.in_progress'].includes(event.type)) {
+                __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_reorderInterimOutput).call(this, response);
+            }
+            return;
+        }
+        if (position === undefined) {
+            return;
+        }
+        if (event.type === 'response.output_item.added' && event.item != null) {
+            __classPrivateFieldGet(this, _ResponseStream_outputPositions, "f").set(event.output_index, position);
+            const identity = outputIdentity(event.item);
+            __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").set(event.output_index, identity);
+            __classPrivateFieldGet(this, _ResponseStream_wireByIdentity, "f").set(identity, event.output_index);
+            __classPrivateFieldSet(this, _ResponseStream_interimOrderDirty, true);
+        }
+        else if (event.type === 'response.output_item.done') {
+            const item = response.output[position];
+            if (!item) {
+                throw new OpenAIError(`missing output at index ${event.output_index}`);
+            }
+            __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").set(event.output_index, structuredClone(item));
+            __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").delete(event.output_index);
+        }
+    }, _ResponseStream_reorderInterimOutput = function _ResponseStream_reorderInterimOutput(response) {
+        if (!__classPrivateFieldGet(this, _ResponseStream_interimOrderDirty, "f")) {
+            return;
+        }
+        const ordered = [...__classPrivateFieldGet(this, _ResponseStream_outputPositions, "f")];
+        // oxlint-disable-next-line unicorn/no-array-sort -- Sort the fresh map entries; the source supports ES2020.
+        ordered.sort(([left], [right]) => left - right);
+        if (ordered.some(([, oldPosition], newPosition) => oldPosition !== newPosition)) {
+            const derivedText = __classPrivateFieldGet(this, _ResponseStream_accumulatorContext, "f").canonicalSnapshot === response;
+            response.output = ordered.map(([, oldPosition]) => response.output[oldPosition]);
+            __classPrivateFieldSet(this, _ResponseStream_outputPositions, new Map(ordered.map(([wireIndex], newPosition) => [wireIndex, newPosition])));
+            __classPrivateFieldSet(this, _ResponseStream_accumulatorContext, createResponseContext());
+            if (derivedText) {
+                ensureCanonicalOutputText(__classPrivateFieldGet(this, _ResponseStream_accumulatorContext, "f"), response);
+            }
+        }
+        __classPrivateFieldSet(this, _ResponseStream_interimOrderDirty, false);
+    }, _ResponseStream_updateInterimResponse = function _ResponseStream_updateInterimResponse(incoming, snapshot) {
+        if (!Array.isArray(incoming.output)) {
+            return false;
+        }
+        const suppliedText = hasOwn(incoming, 'output_text') ? incoming.output_text : undefined;
+        if (incoming.output.length !== 0) {
+            // The temporary response validates only the supplied items. Its derived
+            // output_text is not the aggregate for the retained full response.
+            const validated = cloneValidatedResponse(createResponseContext(), incoming);
+            const replacements = [];
+            for (const item of validated.output) {
+                const wire = __classPrivateFieldGet(this, _ResponseStream_wireByIdentity, "f").get(outputIdentity(item));
+                const position = wire === undefined ? undefined : __classPrivateFieldGet(this, _ResponseStream_outputPositions, "f").get(wire);
+                if (wire === undefined || position === undefined) {
+                    return false;
+                }
+                replacements.push({ wire, position, item });
+            }
+            const updateText = suppliedText == null;
+            if (!updateText) {
+                // Explicit interim text replaces the full aggregate after any required
+                // reorder; deriving text from retained messages here would be discarded.
+                __classPrivateFieldGet(this, _ResponseStream_accumulatorContext, "f").canonicalSnapshot = undefined;
+            }
+            for (const { wire, position, item } of replacements) {
+                replaceResponseOutputItem(__classPrivateFieldGet(this, _ResponseStream_accumulatorContext, "f"), snapshot, position, item, updateText);
+                if (__classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").has(wire)) {
+                    __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").set(wire, structuredClone(item));
+                }
+            }
+            __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_reorderInterimOutput).call(this, snapshot);
+        }
+        const { output } = snapshot;
+        let outputText = suppliedText;
+        if (outputText == null) {
+            ensureCanonicalOutputText(__classPrivateFieldGet(this, _ResponseStream_accumulatorContext, "f"), snapshot);
+            outputText = snapshot.output_text;
+        }
+        else {
+            __classPrivateFieldGet(this, _ResponseStream_accumulatorContext, "f").canonicalSnapshot = undefined;
+        }
+        for (const key of Object.keys(snapshot)) {
+            if (!hasOwn(incoming, key)) {
+                Reflect.deleteProperty(snapshot, key);
+            }
+        }
+        Object.defineProperties(snapshot, Object.getOwnPropertyDescriptors({ ...incoming, output, output_text: outputText }));
+        return true;
     }, _ResponseStream_addEvent = function _ResponseStream_addEvent(event, starting_after) {
         if (this.ended) {
             return;
@@ -55341,54 +56147,90 @@ class ResponseStream extends EventStream {
             throw new APIError(undefined, error, event.message, undefined);
         }
         let dispatchEvent = event;
+        let outputPosition;
         const response = accumulateResponseWithContext(event, __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f"), __classPrivateFieldGet(this, _ResponseStream_accumulatorContext, "f"), true, (sanitizedEvent) => {
             dispatchEvent = sanitizedEvent;
+            const prepared = __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_prepareEvent).call(this, sanitizedEvent);
+            if (prepared) {
+                if (hasOwn(prepared, 'output_index') && 'output_index' in prepared) {
+                    outputPosition = prepared.output_index;
+                }
+                else if (hasOwn(prepared, 'response') && 'response' in prepared) {
+                    dispatchEvent = prepared;
+                    if ((prepared.type === 'response.created' ||
+                        prepared.type === 'response.queued' ||
+                        prepared.type === 'response.in_progress') &&
+                        __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f")) {
+                        if (__classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_updateInterimResponse).call(this, prepared.response, __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f"))) {
+                            return null;
+                        }
+                        const identities = new Set(prepared.response.output.map(outputIdentity));
+                        const retained = __classPrivateFieldGet(this, _ResponseStream_currentResponseSnapshot, "f").output.filter((item) => !identities.has(outputIdentity(item)));
+                        if (retained.length) {
+                            return {
+                                ...prepared,
+                                response: { ...prepared.response, output: [...prepared.response.output, ...retained] },
+                            };
+                        }
+                    }
+                }
+            }
+            return prepared;
         });
+        __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_recordOutput).call(this, dispatchEvent, response, outputPosition);
         __classPrivateFieldSet(this, _ResponseStream_currentResponseSnapshot, response);
-        maybeEmit('event', event);
-        switch (dispatchEvent.type) {
+        if (dispatchEvent.type === 'response.output_item.added' && dispatchEvent.item == null) {
+            return;
+        }
+        const wireSnapshot = { ...dispatchEvent };
+        for (const key of Object.keys(nativeEventFields)) {
+            const descriptor = Object.getOwnPropertyDescriptor(dispatchEvent, key);
+            if (descriptor && !descriptor.enumerable) {
+                Object.defineProperty(wireSnapshot, key, {
+                    // oxlint-disable-next-line anti-slop/no-reflect-get -- Read accepted non-enumerable fields from the sanitized Proxy, never the original transport.
+                    value: Reflect.get(dispatchEvent, key, dispatchEvent),
+                    enumerable: true,
+                });
+            }
+        }
+        const eventSnapshot = structuredClone(wireSnapshot);
+        maybeEmit('event', eventSnapshot);
+        switch (wireSnapshot.type) {
             case 'response.output_text.delta': {
-                const output = response.output[dispatchEvent.output_index];
+                const output = response.output[outputPosition ?? wireSnapshot.output_index];
                 if (!output) {
-                    throw new OpenAIError(`missing output at index ${dispatchEvent.output_index}`);
+                    throw new OpenAIError(`missing output at index ${wireSnapshot.output_index}`);
                 }
                 if (output.type === 'message') {
-                    const content = output.content[dispatchEvent.content_index];
+                    const content = output.content[wireSnapshot.content_index];
                     if (!content) {
-                        throw new OpenAIError(`missing content at index ${dispatchEvent.content_index}`);
+                        throw new OpenAIError(`missing content at index ${wireSnapshot.content_index}`);
                     }
                     if (content.type !== 'output_text') {
                         throw new OpenAIError(`expected content to be 'output_text', got ${content.type}`);
                     }
                     maybeEmit('response.output_text.delta', {
-                        ...dispatchEvent,
-                        type: dispatchEvent.type,
-                        item_id: dispatchEvent.item_id,
-                        output_index: dispatchEvent.output_index,
-                        content_index: dispatchEvent.content_index,
+                        ...structuredClone(wireSnapshot),
                         snapshot: content.text,
                     });
                 }
                 break;
             }
             case 'response.function_call_arguments.delta': {
-                const output = response.output[dispatchEvent.output_index];
+                const output = response.output[outputPosition ?? wireSnapshot.output_index];
                 if (!output) {
-                    throw new OpenAIError(`missing output at index ${dispatchEvent.output_index}`);
+                    throw new OpenAIError(`missing output at index ${wireSnapshot.output_index}`);
                 }
                 if (output.type === 'function_call') {
                     maybeEmit('response.function_call_arguments.delta', {
-                        ...dispatchEvent,
-                        type: dispatchEvent.type,
-                        item_id: dispatchEvent.item_id,
-                        output_index: dispatchEvent.output_index,
+                        ...structuredClone(wireSnapshot),
                         snapshot: output.arguments,
                     });
                 }
                 break;
             }
             default: {
-                maybeEmit(dispatchEvent.type, event);
+                maybeEmit(wireSnapshot.type, eventSnapshot);
                 break;
             }
         }
@@ -55400,8 +56242,14 @@ class ResponseStream extends EventStream {
         if (!snapshot) {
             throw new OpenAIError(`request ended without sending any events`);
         }
+        __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_reorderInterimOutput).call(this, snapshot);
         __classPrivateFieldSet(this, _ResponseStream_currentResponseSnapshot, undefined);
         __classPrivateFieldSet(this, _ResponseStream_accumulatorContext, createResponseContext());
+        __classPrivateFieldGet(this, _ResponseStream_outputPositions, "f").clear();
+        __classPrivateFieldGet(this, _ResponseStream_wireByIdentity, "f").clear();
+        __classPrivateFieldSet(this, _ResponseStream_interimOrderDirty, false);
+        __classPrivateFieldGet(this, _ResponseStream_completedOutput, "f").clear();
+        __classPrivateFieldGet(this, _ResponseStream_unfinishedOutput, "f").clear();
         const parsedResponse = finalizeResponse(snapshot, __classPrivateFieldGet(this, _ResponseStream_params, "f"));
         __classPrivateFieldSet(this, _ResponseStream_finalResponse, parsedResponse);
         return parsedResponse;
@@ -55426,6 +56274,13 @@ class ResponseStream extends EventStream {
         }
         return response;
     }
+}
+function outputIdentity(item) {
+    return JSON.stringify([
+        item.type,
+        !hasRoutedOutputCallIdentity(item) && hasOwn(item, 'id') ? item.id : null,
+        hasOwn(item, 'call_id') && 'call_id' in item ? item.call_id : null,
+    ]);
 }
 function finalizeResponse(snapshot, params) {
     return maybeParseResponse(snapshot, params);
@@ -57226,6 +58081,7 @@ class OpenAI {
         _OpenAI_responseAttempts.set(this, new WeakMap());
         this._apiKeyInvocation = 0;
         this._lastCachedAPIKeyInvocation = 0;
+        this.decisions = new Decisions(this);
         /**
          * Given a prompt, the model will return one or more predicted completions, and can also return the probabilities of alternative tokens at each position.
          */
@@ -58799,6 +59655,7 @@ OpenAI.UnprocessableEntityError = UnprocessableEntityError;
 OpenAI.InvalidWebhookSignatureError = InvalidWebhookSignatureError;
 OpenAI.toFile = toFile;
 OpenAI.toStreamingFile = toStreamingFile;
+OpenAI.Decisions = Decisions;
 OpenAI.Completions = Completions;
 OpenAI.Chat = Chat;
 OpenAI.Embeddings = Embeddings;
